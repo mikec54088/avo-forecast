@@ -1,3 +1,23 @@
 # Phase 0. Install with: crontab -e — adjust paths.
-*/15 * * * * cd /path/to/avo-forecast && .venv/bin/python -m experiments.kalshi_quant.capture snapshot >> data/capture.log 2>&1
-17   * * * * cd /path/to/avo-forecast && .venv/bin/python -m experiments.kalshi_quant.capture settle   >> data/capture.log 2>&1
+#
+# Timing note (measured 2026-08-24): two consecutive sweeps walked 1,319 and
+# 1,320 pages of the open universe in 412s and 427s — ~7 minutes, roughly half
+# the 15-minute interval. The universe nearly doubled in the preceding 15 hours
+# (698,892 -> 1,319,432 markets, essentially all MVE combos), so this margin is
+# not guaranteed; watch capture.log if sweeps approach 15 minutes.
+# capture.py takes a lock in data/kalshi_quant/; if a sweep overruns, the next
+# tick exits immediately rather than doubling the request rate into Kalshi's
+# limiter. Overruns therefore degrade to a 30-minute cadence on their own.
+#
+# The settle line below is commented out deliberately. settle() walks the whole
+# settled universe unbounded (the non-MVE portion alone is ~1.34M markets per 30
+# days) and cannot finish within an hour; because LOCK_STALE_SECONDS is 40 min,
+# an overrunning run gets its lock cleared by the next tick and a second
+# concurrent sweep starts. Bound it by settlement time before enabling.
+# Settlements stay queryable, so that path is backfillable — snapshots are not.
+#
+# cron runs with a minimal PATH and no shell profile, so `uv` is called by
+# absolute path. Find yours with: command -v uv
+
+*/15 * * * * cd /Users/hermesagent/development/avo-forecast && /Users/hermesagent/miniconda3/bin/uv run python -m experiments.kalshi_quant.capture snapshot >> data/capture.log 2>&1
+# 17 * * * * cd /Users/hermesagent/development/avo-forecast && /Users/hermesagent/miniconda3/bin/uv run python -m experiments.kalshi_quant.capture settle   >> data/capture.log 2>&1

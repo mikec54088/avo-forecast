@@ -75,10 +75,12 @@ def simulate_fill(
     if market.spread_cents > max_spread_cents:
         return Fill(market.ticker, side, 0, 0.0, False, "spread too wide")
 
+    # MarketSnapshot stores dollars (that is what the API returns); this
+    # function and FEE_PER_CONTRACT_CENTS are denominated in cents.
     if side == "yes":
-        price, depth = float(market.yes_ask), market.yes_ask_size
+        price, depth = market.yes_ask_cents, market.yes_ask_size
     else:
-        price, depth = float(100 - market.yes_bid), market.yes_bid_size
+        price, depth = 100.0 - market.yes_bid_cents, market.yes_bid_size
 
     if depth is not None:
         cap = int(depth * max_depth_fraction)
