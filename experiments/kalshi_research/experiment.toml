@@ -1,0 +1,19 @@
+[experiment]
+name = "kalshi_research"
+entrypoint = "experiments.kalshi_research.experiment"
+status = "planned"          # DO NOT BUILD YET — see docs/EXPERIMENTS.md
+description = """
+Same domain and same fitness function as kalshi-quant, but a candidate is an
+AGENT, not a function: it may search news, read sources, and reason per market
+before emitting a probability.
+
+This is a separate experiment, not a flag on kalshi-quant, because it changes
+the cost model by orders of magnitude — every candidate evaluation becomes
+dozens of model calls instead of microseconds of arithmetic. Sharing a fitness
+function with kalshi-quant is the point: it makes the two directly comparable,
+and that comparison ("does research-time buy calibration?") is the actual
+research question.
+
+Blocked on: kalshi-quant completing generation 1, so there is a real baseline
+to compare against.
+"""

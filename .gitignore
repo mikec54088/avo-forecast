@@ -1,0 +1,13 @@
+# INVARIANT #5: run artifacts never get committed
+data/
+runs/
+*.parquet
+
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+.env

@@ -1,0 +1,23 @@
+[experiment]
+name = "kalshi_quant"
+entrypoint = "experiments.kalshi_quant.experiment"
+status = "active"
+description = """
+Candidates are pure functions of market state: forecast(market, context) -> P(yes).
+No network access, no research. Cheap to evaluate (microseconds), so cost is
+dominated by the agent's variation step, not by scoring.
+"""
+
+[fitness]
+primary = "brier_skill_vs_market"
+secondary = ["paper_pnl"]
+# A candidate must show positive skill AND non-negative P&L to be promoted.
+
+[constraints]
+min_volume = 100
+max_spread_cents = 8
+min_hours_to_close = 24
+
+[cadence]
+generation_weeks = 4
+candidates_per_generation = 50
