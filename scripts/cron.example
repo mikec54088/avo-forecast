@@ -9,15 +9,20 @@
 # tick exits immediately rather than doubling the request rate into Kalshi's
 # limiter. Overruns therefore degrade to a 30-minute cadence on their own.
 #
-# The settle line below is commented out deliberately. settle() walks the whole
-# settled universe unbounded (the non-MVE portion alone is ~1.34M markets per 30
-# days) and cannot finish within an hour; because LOCK_STALE_SECONDS is 40 min,
-# an overrunning run gets its lock cleared by the next tick and a second
-# concurrent sweep starts. Bound it by settlement time before enabling.
-# Settlements stay queryable, so that path is backfillable — snapshots are not.
+# settle() is driven by our own snapshots, not by the global settled feed, so it
+# is cheap: measured 2026-08-24, 2,750 resolutions over 145 requests in 35s, and
+# 10s when little is pending. It is idempotent — the work list is "captured,
+# closed, not yet resolved" — so a missed run costs nothing and a gap of any
+# length repairs itself rather than falling outside a fixed window.
+#
+# It runs at :12, inside the gap between snapshot sweeps. Snapshots start on the
+# quarter hour and have taken up to 585s, so they occupy roughly :00-:10,
+# :15-:25, :30-:40, :45-:55. The two jobs take separate locks and would not
+# block each other, but keeping them disjoint avoids doubling the request rate
+# into Kalshi's limiter.
 #
 # cron runs with a minimal PATH and no shell profile, so `uv` is called by
 # absolute path. Find yours with: command -v uv
 
 */15 * * * * cd /Users/hermesagent/development/avo-forecast && /Users/hermesagent/miniconda3/bin/uv run python -m experiments.kalshi_quant.capture snapshot >> data/capture.log 2>&1
-# 17 * * * * cd /Users/hermesagent/development/avo-forecast && /Users/hermesagent/miniconda3/bin/uv run python -m experiments.kalshi_quant.capture settle   >> data/capture.log 2>&1
+12   * * * * cd /Users/hermesagent/development/avo-forecast && /Users/hermesagent/miniconda3/bin/uv run python -m experiments.kalshi_quant.capture settle   >> data/capture.log 2>&1

@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Self
 
@@ -41,9 +41,20 @@ from experiments.kalshi_quant.types import MarketSnapshot
 
 DATA_ROOT = Path(__file__).resolve().parents[2] / "data" / "kalshi_quant"
 
-# A full sweep takes ~8 minutes against a 15-minute cron. Overlapping runs would
+# A full sweep takes ~7 minutes against a 15-minute cron. Overlapping runs would
 # double the request rate into a limiter we already pace against.
 LOCK_STALE_SECONDS = 40 * 60
+
+# Resolutions are looked up from what we captured, NOT by walking the global
+# settled feed. Measured 2026-08-24: that feed is 99.8% MVE parlay combos and is
+# not usefully ordered — page 25 still carried settlements six minutes old while
+# its oldest entry was 45 minutes behind — so no settlement-time window can
+# terminate against it. Series-scoped queries are broadly newest-first and the
+# query set is tiny: the 1,288 captured markets past close_time spanned just 60
+# series, against 13,377 for a blind walk.
+SETTLE_SNAPSHOT_DAYS = 2.0      # how far back to scan snapshots for closed markets
+SETTLE_MARGIN_HOURS = 1.0       # slack below the oldest close_time we still need
+SETTLE_MAX_PAGES_PER_SERIES = 20
 
 
 def _write(df: pd.DataFrame, kind: str) -> Path:
@@ -153,54 +164,176 @@ def snapshot() -> Path:
         return path
 
 
-def settle() -> Path:
-    """Sweep settled markets and record outcomes.
+def _parquet_files(kind: str, since: datetime | None = None) -> list[Path]:
+    """Files under DATA_ROOT/<kind>/date=YYYY-MM-DD/, optionally date-filtered."""
+    out = []
+    for d in sorted(DATA_ROOT.glob(f"{kind}/date=*")):
+        if since is not None:
+            try:
+                day = datetime.strptime(d.name[5:], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            if day < since - timedelta(days=1):
+                continue
+        out.extend(sorted(d.glob("*.parquet")))
+    return out
+
+
+def _resolved_tickers() -> set[str]:
+    seen: set[str] = set()
+    for f in _parquet_files("resolutions"):
+        try:
+            seen.update(pd.read_parquet(f, columns=["ticker"])["ticker"])
+        except (OSError, ValueError) as exc:  # truncated file must not block the run
+            print(f"  warning: unreadable {f.name}: {exc!r}")
+    return seen
+
+
+def _pending(snapshot_days: float) -> pd.DataFrame:
+    """Non-MVE markets we captured that are past close_time and unresolved.
+
+    Only recent snapshots are scanned. That is sufficient rather than a
+    shortcut: a market appears in every snapshot right up until it closes, so
+    anything that closed inside the window is present in one of these files.
+    """
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(days=snapshot_days)
+    frames = []
+    for f in _parquet_files("snapshots", since):
+        try:
+            frames.append(pd.read_parquet(
+                f, columns=["ticker", "series_ticker", "close_time", "is_mve"]
+            ))
+        except (OSError, ValueError) as exc:
+            print(f"  warning: unreadable {f.name}: {exc!r}")
+    if not frames:
+        return pd.DataFrame(columns=["ticker", "series_ticker", "close_time", "is_mve"])
+    df = pd.concat(frames, ignore_index=True).drop_duplicates("ticker")
+    df = df[(~df["is_mve"]) & (df["close_time"] <= now)]
+    already = _resolved_tickers()
+    if already:
+        df = df[~df["ticker"].isin(already)]
+    return df
+
+
+def settle(
+    snapshot_days: float = SETTLE_SNAPSHOT_DAYS,
+    max_pages_per_series: int = SETTLE_MAX_PAGES_PER_SERIES,
+) -> Path:
+    """Record outcomes for captured markets that have closed but are unresolved.
+
+    Driven by our own snapshots, not by the global settled feed. See
+    SETTLE_SNAPSHOT_DAYS above for why: that feed is 99.8% MVE and is not
+    ordered well enough for any settlement-time window to terminate against.
+
+    Because the work list is "captured, closed, and not yet resolved", the job
+    is idempotent and self-healing. A market that has closed but not yet settled
+    (settlement lags close by ~3 minutes) simply stays pending and is picked up
+    next run, and a gap of any length repairs itself rather than falling out of
+    a fixed window.
 
     The `result` -> outcome mapping is VERIFIED against the live API on
     2026-08-24 over 964 settled non-MVE markets: every result='yes' market paid
     settlement_value_dollars=$1.0000 (349/349) and every result='no' paid
     $0.0000 (615/615); median last_price at settlement was 0.990 vs 0.010; and
-    all 182 two-leg events had exactly one 'yes'. The mapping is NOT inverted.
+    all 182 two-leg events had exactly one 'yes'. It is NOT inverted. This run
+    re-checks that agreement on every market and reports any disagreement --
+    a silent flip here would invert every score in the project.
 
-    Note settled markets report status='finalized', not 'settled' — filter on
-    `result`, not on `status`.
-
-    STILL BROKEN: this walks the entire settled universe with no date bound. The
-    non-MVE portion alone is ~1.34M markets per 30 days, so a sweep cannot
-    finish inside the hourly cron slot. Worse, LOCK_STALE_SECONDS is 40 min
-    against an hourly tick, so an overrunning run has its own lock cleared by
-    the next tick and a second concurrent sweep starts. Bound this by
-    settlement time before installing the settle cron line.
+    Note settled markets report status='finalized', not 'settled'.
     """
     with _Lock("settle"):
-        rows = []
-        undated = 0
+        started = datetime.now(timezone.utc)
+        pend = _pending(snapshot_days)
+        if pend.empty:
+            path = _write(pd.DataFrame(
+                columns=["ticker", "series_ticker", "resolved_at", "outcome",
+                         "settlement_value"]), "resolutions")
+            print(f"nothing pending -> {path}")
+            return path
+
+        by_series = {
+            st: set(g["ticker"])
+            for st, g in pend.groupby("series_ticker", sort=False)
+        }
+        earliest = pend.groupby("series_ticker")["close_time"].min()
+        print(f"{len(pend)} closed unresolved markets across {len(by_series)} series")
+
+        rows: list[dict[str, object]] = []
+        mismatches: list[str] = []
+        pages = 0
         with KalshiClient() as client:
-            for raw in client.iter_markets(status="settled"):
-                if raw.get("result") not in ("yes", "no"):
-                    continue
-                resolved_at = _resolved_at(raw)
-                if resolved_at is None:
-                    # No usable timestamp means the holdout cannot place it.
-                    # Dropping is the only safe option: a guessed resolution
-                    # time is how in-sample data leaks past INVARIANT #1.
-                    undated += 1
-                    continue
-                rows.append({
-                    "ticker": raw["ticker"],
-                    "series_ticker": raw["event_ticker"].split("-")[0],
-                    "resolved_at": resolved_at,
-                    "outcome": 1 if raw["result"] == "yes" else 0,
-                })
-        path = _write(pd.DataFrame(rows), "resolutions")
-        print(f"{len(rows)} resolutions ({undated} dropped, no timestamp) -> {path}")
+            for st, want in by_series.items():
+                floor = earliest[st].to_pydatetime() - timedelta(hours=SETTLE_MARGIN_HOURS)
+                cursor: str | None = None
+                for _ in range(max_pages_per_series):
+                    page = client._get(
+                        "/markets", status="settled", limit=1000,
+                        series_ticker=st, cursor=cursor,
+                    )
+                    pages += 1
+                    markets = page.get("markets", [])
+                    if not markets:
+                        break
+                    newest: datetime | None = None
+                    for raw in markets:
+                        ts = _resolved_at(raw)
+                        if ts is not None and (newest is None or ts > newest):
+                            newest = ts
+                        if raw.get("ticker") not in want:
+                            continue
+                        if raw.get("result") not in ("yes", "no") or ts is None:
+                            continue
+                        outcome = 1 if raw["result"] == "yes" else 0
+                        sv = raw.get("settlement_value_dollars")
+                        try:
+                            if sv is not None and (float(sv) >= 0.5) != bool(outcome):
+                                mismatches.append(f"{raw['ticker']}: result={raw['result']} value={sv}")
+                        except (TypeError, ValueError):
+                            pass
+                        rows.append({
+                            "ticker": raw["ticker"],
+                            "series_ticker": st,
+                            "resolved_at": ts,
+                            "outcome": outcome,
+                            "settlement_value": float(sv) if sv is not None else None,
+                        })
+                        want.discard(raw["ticker"])
+                    cursor = page.get("cursor")
+                    # Stop as soon as this series is satisfied; otherwise once the
+                    # page is entirely older than anything we still need. Order
+                    # within a series is broadly, not strictly, newest-first, so
+                    # this leans on the ticker set rather than on the ordering.
+                    if not want or not cursor or (newest is not None and newest < floor):
+                        break
+
+        df = pd.DataFrame(rows)
+        path = _write(df, "resolutions")
+        elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+        unresolved = sum(len(w) for w in by_series.values())
+        print(
+            f"{len(rows)} resolutions over {pages} requests in {elapsed:.0f}s; "
+            f"{unresolved} still pending (closed but not yet settled) -> {path}"
+        )
+        if mismatches:
+            print(f"  !!! {len(mismatches)} result/settlement_value disagreements:")
+            for line in mismatches[:5]:
+                print(f"    {line}")
         return path
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["snapshot", "settle"])
-    {"snapshot": snapshot, "settle": settle}[ap.parse_args().mode]()
+    ap.add_argument(
+        "--snapshot-days", type=float, default=SETTLE_SNAPSHOT_DAYS,
+        help="settle only: how far back to scan snapshots (default %(default)s)",
+    )
+    args = ap.parse_args()
+    if args.mode == "snapshot":
+        snapshot()
+    else:
+        settle(snapshot_days=args.snapshot_days)
 
 
 if __name__ == "__main__":
