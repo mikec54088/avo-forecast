@@ -67,8 +67,12 @@ than as a result.
 > Re-run `uv run python scripts/check_calibration.py` before accepting this
 > gate. The remaining open **G2** decision is whether `market_prob` stays the
 > raw midpoint, becomes spread-aware, or is restricted to fillable spreads —
-> deliberately deferred to on/after 2026-08-28 so it is decided on several days
-> of data rather than one afternoon.
+> deliberately deferred to on/after **2026-08-31** so it is decided on a week of
+> data rather than one afternoon. That date is a Monday, chosen over the Friday
+> so the sample spans a weekend: sports series settle daily while financial and
+> economic ones do not, and a weekday-only window could not show whether the
+> shading is concentrated in one category. `scripts/recheck.sh` runs both
+> diagnostics and writes a dated report.
 
 ## Phase 3 — human as the agent  [week 2-3]
 Hand-write 8-10 real candidates: time-decay adjustment, favorite-longshot bias
