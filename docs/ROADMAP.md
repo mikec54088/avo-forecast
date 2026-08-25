@@ -20,9 +20,16 @@ directory.
 entry is installed.
 
 ## Phase 1 — candidate contract  [week 1]
-`forecast(market, context) -> float` plus a MANIFEST. Three hand-written
-baselines as controls: market-implied, base-rate, shrunk-to-0.5.
-**Done when** all three import, run, and return valid probabilities.
+`forecast(market, context) -> float` plus a MANIFEST. Four hand-written
+baselines as controls: market-implied, base-rate, shrunk-to-0.5, and
+sharpened-away-from-0.5.
+**Done when** all four import, run, and return valid probabilities.
+
+The fourth is inverted: the other three should score at or below zero and
+positive skill from any of them means the scorer is broken, whereas
+`baseline_sharpened` is *expected* to score positive while the fitness
+denominator is biased, and ~0 once it is not. Without it the control set only
+probes the direction toward 0.5 — see the Phase 2 note below.
 
 ## Phase 2 — scorer  [week 1-2]
 Brier skill vs market implied. Temporal holdout enforcement. Pessimistic fill

@@ -14,4 +14,5 @@ def test_planned_experiments_are_marked():
 def test_seed_candidates_load():
     exp = registry.load("kalshi_quant")
     seeds = {c.candidate_id for c in exp.seed_candidates()}
-    assert {"baseline_market", "baseline_shrunk", "baseline_base_rate"} <= seeds
+    assert {"baseline_market", "baseline_shrunk", "baseline_base_rate",
+            "baseline_sharpened"} <= seeds
