@@ -1,4 +1,5 @@
-"""Calibration of the market's implied probability at entry.
+"""Calibration of the market's implied probability at entry, and whether that
+bias is exploitable by a candidate.
 
 INVARIANT #2 makes the market's own probability the fitness denominator, so a
 bias in that estimator is not cosmetic: a candidate could post positive skill by
@@ -15,14 +16,31 @@ Reports per-bin predicted vs actual for the midpoint and, for comparison, for
 the bid and the ask. If the midpoint's bias is a spread artifact, the bid should
 be biased low and the ask high, bracketing the outcome -- which would argue for
 a spread-aware market_prob rather than the raw midpoint (a G2 decision).
+
+Then probes whether the bias is worth skill. THE CONTROL SET IS ASYMMETRIC:
+baseline_market sits on the price and baseline_shrunk pulls TOWARD 0.5, so
+nothing in it moves away from 0.5 -- which is the direction the bias lies in.
+Measured 2026-08-24 on 2,921 observations, a two-line logit sharpen scored
++0.0195 skill, CI [+0.0121, +0.0273], while all three baselines behaved exactly
+as documented. ROADMAP Phase 2's "three baselines score ~0 skill" is therefore
+necessary but NOT sufficient: it can pass with an exploitable denominator.
+
+The skill was concentrated where the book is wide (+0.0209, CI excludes zero)
+and was not distinguishable from zero on fillable markets (+0.0152, CI
+[-0.0005, +0.0320]) -- i.e. it lives exactly where simulate_fill refuses to
+trade. Note the CIs here use scoring.py's i.i.d. bootstrap; observations are
+clustered by series, so the true intervals are wider than printed.
 """
 from __future__ import annotations
 
 import argparse
 import glob
+import math
 from pathlib import Path
 
 import pandas as pd
+
+from experiments.kalshi_quant.scoring import Observation, bootstrap_ci, skill_score
 
 ROOT = Path(__file__).resolve().parents[1] / "data" / "kalshi_quant"
 BINS = [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0]
@@ -59,6 +77,36 @@ def table(j: pd.DataFrame, col: str) -> pd.DataFrame:
     return g
 
 
+def sharpen(p: float, k: float) -> float:
+    """Push a probability away from 0.5 in logit space. k>1 sharpens."""
+    p = min(max(p, 1e-6), 1.0 - 1e-6)
+    return 1.0 / (1.0 + math.exp(-math.log(p / (1.0 - p)) * k))
+
+
+def probe(j: pd.DataFrame, label: str) -> None:
+    """Score simple transforms against the market, using the project's scorer.
+
+    These are diagnostics of the fitness function, not candidates. If a transform
+    this trivial earns skill, the denominator is exploitable and a generated
+    candidate will find it.
+    """
+    print(f"\n{label}  n={len(j):,}")
+    transforms = [
+        ("baseline_market", lambda p: p),
+        ("baseline_shrunk (->0.5)", lambda p: p + 0.2 * (0.5 - p)),
+        ("sharpen k=1.25 (away)", lambda p: sharpen(p, 1.25)),
+        ("sharpen k=1.5  (away)", lambda p: sharpen(p, 1.5)),
+        ("sharpen k=2.0  (away)", lambda p: sharpen(p, 2.0)),
+    ]
+    for name, f in transforms:
+        obs = [Observation(f(p), p, int(o))
+               for p, o in zip(j["mid"], j["outcome"], strict=True)]
+        _, _, sk = skill_score(obs)
+        lo, hi = bootstrap_ci(obs, n=400)
+        flag = "  <-- EXPLOITABLE" if lo > 0 else ""
+        print(f"  {name:<26} skill={sk:+.4f}  95% CI [{lo:+.4f},{hi:+.4f}]{flag}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--min-obs", type=int, default=200)
@@ -86,6 +134,17 @@ def main() -> None:
                   "the midpoint (G2).")
         else:
             print("No consistent shading in this sample.")
+
+    print("\n" + "=" * 72)
+    print("EXPLOITABILITY PROBE - diagnostics of the fitness, not candidates.")
+    print("CIs use scoring.py's i.i.d. bootstrap; observations cluster by series,")
+    print("so the true intervals are WIDER than shown.")
+    probe(j, "ALL")
+    tight, wide = j[j["spread"] <= 0.08], j[j["spread"] > 0.08]
+    if len(tight) >= args.min_obs:
+        probe(tight, "FILLABLE (spread <= 0.08, simulate_fill's cap)")
+    if len(wide) >= args.min_obs:
+        probe(wide, "WIDE (spread > 0.08, not fillable)")
 
 
 if __name__ == "__main__":

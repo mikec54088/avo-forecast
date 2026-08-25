@@ -30,6 +30,29 @@ model for the secondary P&L gate.
 **Done when** the three baselines score ~0 skill and are statistically
 indistinguishable from each other.
 
+> **This criterion is necessary but not sufficient — do not treat passing it as
+> a clean scorer.** The control set is asymmetric: `baseline_market` sits on the
+> price and `baseline_shrunk` pulls *toward* 0.5, so nothing in it moves *away*
+> from 0.5 — which is the direction the market midpoint is actually biased in.
+>
+> Measured 2026-08-24 on 2,921 real observations: all three baselines behaved
+> exactly as documented, while a two-line logit sharpen scored **+0.0195 skill,
+> CI [+0.0121, +0.0273]**. The midpoint is shaded toward 0.5 (median spread
+> 0.20, prices bounded to [0,1], so the mid is pushed centre-ward at the
+> extremes). A generated candidate will find this quickly — "nudge the price
+> away from 50/50" is among the first things an LLM tries — and it will look
+> like a discovery.
+>
+> It is also untradeable: the skill sits where the book is wide (+0.0209, CI
+> excludes zero) and vanishes on markets `simulate_fill` will actually trade
+> (+0.0152, CI [-0.0005, +0.0320]). INVARIANT #2 and INVARIANT #4 disagree about
+> what counts as a market.
+>
+> Re-run `uv run python scripts/check_calibration.py` before accepting this
+> gate. Open **G2** decisions: add a fourth control that sharpens away from 0.5
+> (cheapest, makes the gate self-checking); and whether `market_prob` stays the
+> raw midpoint, becomes spread-aware, or is restricted to fillable spreads.
+
 ## Phase 3 — human as the agent  [week 2-3]
 Hand-write 8-10 real candidates: time-decay adjustment, favorite-longshot bias
 correction, volume-weighted confidence, cross-series base rates. Score them.
