@@ -51,7 +51,7 @@ If a task appears to require one of these, say so and stop. Do not work around i
 
 ---
 
-## Current phase: 0 + 1
+## Current phase: 0 + 1 + 2
 
 Do NOT build memory, selection, or the supervisor. They raise
 `NotImplementedError` deliberately — building them before real scoring data
@@ -59,12 +59,14 @@ exists means tuning heuristics against imagination.
 
 ### Priorities, in order
 
-**P0 — get snapshots flowing today. Nothing else is calendar-bound.**
+**P0 was "get snapshots flowing today". Met 2026-08-24 — and it stays the
+standing priority: if capture ever stops, fixing it outranks everything below.**
 
 Top-of-book at 2pm today is gone forever if nothing captured it. Resolutions
 are NOT in this category — Kalshi keeps settled markets queryable via
 `status=settled`, so the settle path can be backfilled later. Snapshots cannot.
-Optimize P0 for "running tonight, imperfect" over "correct next week".
+That asymmetry does not expire: an hour of downtime is an hour of observations
+that no later work can recover.
 
 0. **DONE 2026-08-24.** Snapshots are flowing. Field names are verified in
    `types.py` (all prices are decimal strings in dollars, not cents), and the
@@ -122,7 +124,11 @@ Optimize P0 for "running tonight, imperfect" over "correct next week".
    If `baseline_sharpened` scores clearly positive, that is not a discovery —
    it means `market_prob` needs deciding (**G2**), not that anything was found.
 
-3. **Stop and report.** Phase gate G4.
+3. **Stop and report before Phase 3.** Phase gate G4. Phase 3 (hand-writing
+   8-10 real candidates) is the first phase that generates new strategies
+   rather than plumbing, and `docs/ROADMAP.md` calls it the highest-value
+   phase. Do not start it on the back of a scorer whose denominator question
+   is still open.
 
 ---
 

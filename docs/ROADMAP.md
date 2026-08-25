@@ -3,7 +3,7 @@
 Backwards from the evaluator. The failure mode is a beautiful harness sitting on
 top of a fitness function that measures noise.
 
-## Phase 0 — data capture  [START TONIGHT, then runs forever]
+## Phase 0 — data capture  [DONE 2026-08-24, runs forever]
 Poll Kalshi open markets every 15 min; append snapshots to Parquet. Separately
 sweep settled markets and record outcomes.
 
@@ -16,10 +16,15 @@ one that starts next week.
 No agent, no framework, no scoring. This phase is a cron job and a Parquet
 directory.
 
-**Done when** two consecutive snapshot runs have landed files and the cron
-entry is installed.
+**Done when** two consecutive snapshot runs have landed files and the scheduler
+is installed. **Met 2026-08-24**: snapshots every 15 min on the quarter hour,
+settle hourly at :12, both via `scripts/launchd/`.
 
-## Phase 1 — candidate contract  [week 1]
+Not cron — on macOS it is subject to TCC and fails *completely silently*
+without Full Disk Access. A correct crontab line installed that day never
+executed once. Verify by checking that data lands, never that a job is loaded.
+
+## Phase 1 — candidate contract  [DONE 2026-08-24]
 `forecast(market, context) -> float` plus a MANIFEST. Four hand-written
 baselines as controls: market-implied, base-rate, shrunk-to-0.5, and
 sharpened-away-from-0.5.
@@ -31,16 +36,20 @@ positive skill from any of them means the scorer is broken, whereas
 denominator is biased, and ~0 once it is not. Without it the control set only
 probes the direction toward 0.5 — see the Phase 2 note below.
 
-## Phase 2 — scorer  [week 1-2]
+## Phase 2 — scorer  [IN PROGRESS]
 Brier skill vs market implied. Temporal holdout enforcement. Pessimistic fill
 model for the secondary P&L gate.
-**Done when** the three baselines score ~0 skill and are statistically
-indistinguishable from each other.
+**Done when** the three symmetric baselines (market-implied, base-rate,
+shrunk-to-0.5) score ~0 skill and are statistically indistinguishable from each
+other, **and** `baseline_sharpened` has been read as the tripwire it is rather
+than as a result.
 
 > **This criterion is necessary but not sufficient — do not treat passing it as
-> a clean scorer.** The control set is asymmetric: `baseline_market` sits on the
-> price and `baseline_shrunk` pulls *toward* 0.5, so nothing in it moves *away*
-> from 0.5 — which is the direction the market midpoint is actually biased in.
+> a clean scorer.** The original control set was asymmetric: `baseline_market`
+> sits on the price and `baseline_shrunk` pulls *toward* 0.5, so nothing moved
+> *away* from 0.5 — the direction the market midpoint is actually biased in.
+> `baseline_sharpened` was added on 2026-08-24 to close that hole, and it is
+> expected to score positive until the denominator question below is settled.
 >
 > Measured 2026-08-24 on 2,921 real observations: all three baselines behaved
 > exactly as documented, while a two-line logit sharpen scored **+0.0195 skill,
@@ -56,9 +65,10 @@ indistinguishable from each other.
 > what counts as a market.
 >
 > Re-run `uv run python scripts/check_calibration.py` before accepting this
-> gate. Open **G2** decisions: add a fourth control that sharpens away from 0.5
-> (cheapest, makes the gate self-checking); and whether `market_prob` stays the
-> raw midpoint, becomes spread-aware, or is restricted to fillable spreads.
+> gate. The remaining open **G2** decision is whether `market_prob` stays the
+> raw midpoint, becomes spread-aware, or is restricted to fillable spreads —
+> deliberately deferred to on/after 2026-08-28 so it is decided on several days
+> of data rather than one afternoon.
 
 ## Phase 3 — human as the agent  [week 2-3]
 Hand-write 8-10 real candidates: time-decay adjustment, favorite-longshot bias
