@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.avoforecast.kalshi-snapshot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/hermesagent/miniconda3/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>-m</string>
+        <string>experiments.kalshi_quant.capture</string>
+        <string>snapshot</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/hermesagent/development/avo-forecast</string>
+
+    <!-- Pinned to wall-clock :00/:15/:30/:45 every hour. StartInterval was a
+         relative timer and macOS coalesced it: observed gaps were 21m28s
+         against a nominal 900s (~68 snapshots/day instead of 96).
+         A sweep takes ~6.5 min (~3.16 pages/s), so each run uses ~43% of its
+         slot; capture.py's own lock makes an overrun skip the next tick
+         rather than double the request rate into Kalshi's limiter. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Minute</key><integer>45</integer></dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/capture.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/capture.log</string>
+
+    <!-- Also sweep on load/boot rather than waiting up to 15 min for a tick. -->
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>

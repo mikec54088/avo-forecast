@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.avoforecast.kalshi-settle</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/hermesagent/miniconda3/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>-m</string>
+        <string>experiments.kalshi_quant.capture</string>
+        <string>settle</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/hermesagent/development/avo-forecast</string>
+
+    <!-- Hourly at :12, inside the gap between snapshot sweeps. Snapshots start
+         on the quarter hour and have taken up to 585s, so they occupy roughly
+         :00-:10, :15-:25, :30-:40, :45-:55. Separate locks mean the two jobs
+         cannot block each other, but keeping them disjoint avoids doubling the
+         request rate into Kalshi's limiter.
+         settle is cheap (145 requests / 35s on first run, 40 / 10s when little
+         is pending) and idempotent, so a missed run costs nothing. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Minute</key><integer>12</integer></dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/capture.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/capture.log</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
