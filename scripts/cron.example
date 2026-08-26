@@ -5,11 +5,13 @@
 # installed on 2026-08-24 (macOS 26.5) never executed once, with no error
 # anywhere. This file is kept for portability to other hosts.
 #
-# Timing note (measured 2026-08-24): two consecutive sweeps walked 1,319 and
-# 1,320 pages of the open universe in 412s and 427s — ~7 minutes, roughly half
-# the 15-minute interval. The universe nearly doubled in the preceding 15 hours
-# (698,892 -> 1,319,432 markets, essentially all MVE combos), so this margin is
-# not guaranteed; watch capture.log if sweeps approach 15 minutes.
+# Timing note (measured 2026-08-25): the snapshot line runs every 20 min, not
+# 15. The open universe grew 698,892 -> 2,081,871 markets over two days,
+# essentially all MVE parlay combos, and sweep time tracks it almost linearly:
+# 412s -> 925s, past the old 900s slot. Sweeps that overrun drop ticks.
+# Watch capture.log; if sweeps approach 20 min, bound them by close time
+# (max_close_ts works on open markets) rather than widening the interval
+# further — see scripts/launchd/README.md.
 # capture.py takes a lock in data/kalshi_quant/; if a sweep overruns, the next
 # tick exits immediately rather than doubling the request rate into Kalshi's
 # limiter. Overruns therefore degrade to a 30-minute cadence on their own.
@@ -29,5 +31,5 @@
 # cron runs with a minimal PATH and no shell profile, so `uv` is called by
 # absolute path. Find yours with: command -v uv
 
-*/15 * * * * cd /Users/hermesagent/development/avo-forecast && /Users/hermesagent/miniconda3/bin/uv run python -m experiments.kalshi_quant.capture snapshot >> data/capture.log 2>&1
+0,20,40 * * * * cd /Users/hermesagent/development/avo-forecast && /Users/hermesagent/miniconda3/bin/uv run python -m experiments.kalshi_quant.capture snapshot >> data/capture.log 2>&1
 12   * * * * cd /Users/hermesagent/development/avo-forecast && /Users/hermesagent/miniconda3/bin/uv run python -m experiments.kalshi_quant.capture settle   >> data/capture.log 2>&1

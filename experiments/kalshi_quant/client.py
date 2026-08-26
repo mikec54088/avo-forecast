@@ -30,7 +30,13 @@ from experiments.kalshi_quant.types import MarketSnapshot
 BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 
 MAX_PAGE_LIMIT = 1000
-MIN_REQUEST_INTERVAL = 0.22  # seconds; ~4.5 req/s ceiling
+# Raised from 0.22 on 2026-08-25. Cursor pagination is strictly sequential, so
+# sweep time is pages x (latency + this). At 0.22 the effective rate was ~2.2
+# req/s -- server latency stacks on top of the sleep -- and a 2.02M-market sweep
+# took 906s, over its 900s slot. 0.15 is a deliberate half-step: 8 req/s drew
+# 1,964 rate-limit responses in an earlier test, while 4.5 req/s drew none over
+# 115 sweeps. Watch capture.log for "rate limited" before going lower.
+MIN_REQUEST_INTERVAL = 0.15  # seconds
 
 
 def _iso(s: str | None) -> datetime | None:

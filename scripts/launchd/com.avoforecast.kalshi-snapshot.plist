@@ -18,18 +18,27 @@
     <key>WorkingDirectory</key>
     <string>/Users/hermesagent/development/avo-forecast</string>
 
-    <!-- Pinned to wall-clock :00/:15/:30/:45 every hour. StartInterval was a
-         relative timer and macOS coalesced it: observed gaps were 21m28s
-         against a nominal 900s (~68 snapshots/day instead of 96).
-         A sweep takes ~6.5 min (~3.16 pages/s), so each run uses ~43% of its
-         slot; capture.py's own lock makes an overrun skip the next tick
-         rather than double the request rate into Kalshi's limiter. -->
+    <!-- Pinned to wall-clock :00/:20/:40. Was :00/:15/:30/:45 until
+         2026-08-25, when the open universe grew 1.32M -> 2.08M markets in a
+         day (essentially all MVE parlays) and sweep time went 412s -> 925s,
+         over the 900s slot. launchd will not start a second copy while one
+         runs, so an overrun silently becomes a dropped tick -- one 30-minute
+         gap was already observed.
+
+         20 min plus MIN_REQUEST_INTERVAL at 0.15 gives headroom to roughly 3M
+         markets. Past that, bound the sweep by close_time: max_close_ts does
+         work on open markets (a +24h window was 9 pages / 5s against 2,082
+         pages / 925s) at the cost of long-horizon price history.
+
+         StartInterval is deliberately not used: it is a relative timer that
+         macOS coalesces, and observed gaps were 21m28s against a nominal
+         900s. capture.py's own lock is the backstop if a run somehow
+         overlaps. -->
     <key>StartCalendarInterval</key>
     <array>
         <dict><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Minute</key><integer>15</integer></dict>
-        <dict><key>Minute</key><integer>30</integer></dict>
-        <dict><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Minute</key><integer>20</integer></dict>
+        <dict><key>Minute</key><integer>40</integer></dict>
     </array>
 
     <key>StandardOutPath</key>

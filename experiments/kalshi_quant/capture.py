@@ -56,6 +56,8 @@ SETTLE_SNAPSHOT_DAYS = 2.0      # how far back to scan snapshots for closed mark
 SETTLE_MARGIN_HOURS = 1.0       # slack below the oldest close_time we still need
 SETTLE_MAX_PAGES_PER_SERIES = 20
 
+RESOLUTION_COLS = ["ticker", "series_ticker", "resolved_at", "outcome", "settlement_value"]
+
 
 def _write(df: pd.DataFrame, kind: str) -> Path:
     now = datetime.now(timezone.utc)
@@ -246,9 +248,7 @@ def settle(
         started = datetime.now(timezone.utc)
         pend = _pending(snapshot_days)
         if pend.empty:
-            path = _write(pd.DataFrame(
-                columns=["ticker", "series_ticker", "resolved_at", "outcome",
-                         "settlement_value"]), "resolutions")
+            path = _write(pd.DataFrame(columns=RESOLUTION_COLS), "resolutions")
             print(f"nothing pending -> {path}")
             return path
 
@@ -307,7 +307,11 @@ def settle(
                     if not want or not cursor or (newest is not None and newest < floor):
                         break
 
-        df = pd.DataFrame(rows)
+        # An empty result still needs the schema: pd.DataFrame([]) writes a
+        # Parquet with no columns at all, which _resolved_tickers() then cannot
+        # read, so every later run logs a warning over a file that holds
+        # nothing. Give it the columns explicitly.
+        df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=RESOLUTION_COLS)
         path = _write(df, "resolutions")
         elapsed = (datetime.now(timezone.utc) - started).total_seconds()
         unresolved = sum(len(w) for w in by_series.values())

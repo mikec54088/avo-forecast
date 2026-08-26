@@ -43,10 +43,22 @@ Do this only when no sweep is in flight (`pgrep -f "capture.*snapshot"`);
 macOS coalesces it: measured gaps were 21m28s against a nominal 900s, i.e. ~68
 snapshots/day instead of 96.
 
-- **snapshot** — `:00 :15 :30 :45`. A sweep takes ~6.5-9.5 min (~3.16 pages/s
-  against a 1.2-1.3M market universe), so it uses under half its slot.
-  `capture.py` takes a lock, so an overrun skips the next tick rather than
-  doubling the request rate into Kalshi's limiter.
+- **snapshot** — `:00 :20 :40`. Was every 15 min until 2026-08-25, when the
+  open universe grew 1.32M -> 2.08M markets in a day (essentially all MVE
+  parlay combos) and sweep time went 412s -> 925s, past the 900s slot. launchd
+  will not start a second copy while one runs, so an overrun silently becomes a
+  dropped tick; one 30-minute gap was observed before this change.
+
+  **Watch this.** Sweep time tracks universe size almost linearly, and the
+  universe is volatile. 20 min plus `MIN_REQUEST_INTERVAL` at 0.15 holds to
+  roughly 3M markets. Past that, bound the sweep by close time — `max_close_ts`
+  does work on open markets (a +24h window measured 9 pages / 5s against 2,082
+  pages / 925s, and is only 3.5% MVE), at the cost of long-horizon price
+  history. There is no MVE filter; every plausible parameter is silently
+  ignored, and filtering after the fetch saves nothing because the cost is
+  walking pages.
+
+      grep -oE 'in [0-9]+s' data/capture.log | tail -20   # duration trend
 - **settle** — `:12`, inside the gap between sweeps. Cheap (145 requests / 35s
   on a first run, 40 / 10s once caught up) and idempotent, so a missed run
   costs nothing.
