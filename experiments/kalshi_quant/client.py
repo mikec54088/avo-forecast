@@ -30,13 +30,20 @@ from experiments.kalshi_quant.types import MarketSnapshot
 BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 
 MAX_PAGE_LIMIT = 1000
-# Raised from 0.22 on 2026-08-25. Cursor pagination is strictly sequential, so
-# sweep time is pages x (latency + this). At 0.22 the effective rate was ~2.2
-# req/s -- server latency stacks on top of the sleep -- and a 2.02M-market sweep
-# took 906s, over its 900s slot. 0.15 is a deliberate half-step: 8 req/s drew
-# 1,964 rate-limit responses in an earlier test, while 4.5 req/s drew none over
-# 115 sweeps. Watch capture.log for "rate limited" before going lower.
-MIN_REQUEST_INTERVAL = 0.15  # seconds
+# Reverted to 0.22 on 2026-08-25 after briefly trying 0.15. The change was
+# measurably inert: page cost is max(pace, latency), server latency is ~0.444s,
+# and two sweeps at 0.22 and 0.15 came out at 0.44428 and 0.44429 s/page --
+# identical to five decimals. A single 429 costs 1.5s of backoff, which would
+# have shown up as 0.0007 s/page, so both runs were also clean.
+#
+# The sweep is latency-bound at ~2.25 req/s and cannot go faster whatever this
+# is set to; lowering it only loosens the fast paths in settle() for no gain.
+# Measured safety: 3.5 req/s over 69 min drew zero 429s, 8 req/s drew 1,964 in
+# 13 minutes. There are no rate-limit headers to read, and these endpoints are
+# unauthenticated, so any enforcement would be IP-wide -- and snapshots are the
+# irrecoverable half of this project. Zero upside against an unrecoverable
+# downside is not a trade worth making.
+MIN_REQUEST_INTERVAL = 0.22  # seconds
 
 
 def _iso(s: str | None) -> datetime | None:
@@ -49,6 +56,12 @@ class KalshiClient:
     def __init__(self, base_url: str = BASE_URL, timeout: float = 30.0) -> None:
         self._http = httpx.Client(base_url=base_url, timeout=timeout)
         self._last_request = 0.0
+        # A 429 that succeeds on retry used to be invisible: the RuntimeError
+        # below only fires after seven consecutive failures, so scattered
+        # throttling left no trace anywhere. Count them -- with no rate-limit
+        # headers exposed, this is the only early warning available.
+        self.requests = 0
+        self.rate_limited = 0
 
     def close(self) -> None:
         self._http.close()
@@ -67,7 +80,9 @@ class KalshiClient:
                 time.sleep(wait)
             self._last_request = time.monotonic()
             r = self._http.get(path, params=clean)
+            self.requests += 1
             if r.status_code == 429:
+                self.rate_limited += 1
                 time.sleep(1.5 * 2**attempt)
                 continue
             r.raise_for_status()
@@ -75,7 +90,10 @@ class KalshiClient:
         raise RuntimeError(f"rate limited after retries: {path}")
 
     def iter_market_pages(
-        self, status: str = "open", limit: int = MAX_PAGE_LIMIT
+        self,
+        status: str = "open",
+        limit: int = MAX_PAGE_LIMIT,
+        max_close_ts: int | None = None,
     ) -> Iterator[tuple[list[dict[str, Any]], datetime]]:
         """Yield (markets, fetched_at) per page.
 
@@ -83,10 +101,20 @@ class KalshiClient:
         run would mis-stamp the last markets by ~10 minutes. The temporal
         holdout (INVARIANT #1) keys off observation time, so each page carries
         the instant it was actually fetched.
+
+        `max_close_ts` bounds the sweep to markets closing before that epoch
+        second. VERIFIED against open markets on 2026-08-25: a +24h window
+        returned 9 pages against 2,118 unbounded. The same parameter is
+        silently IGNORED on status=settled, and unknown parameters are ignored
+        rather than rejected, so never assume a filter works without checking
+        the response.
         """
         cursor: str | None = None
         while True:
-            page = self._get("/markets", status=status, limit=limit, cursor=cursor)
+            page = self._get(
+                "/markets", status=status, limit=limit, cursor=cursor,
+                max_close_ts=max_close_ts,
+            )
             fetched_at = datetime.now(timezone.utc)
             markets = page.get("markets", [])
             if markets:

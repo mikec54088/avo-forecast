@@ -31,5 +31,6 @@
 # cron runs with a minimal PATH and no shell profile, so `uv` is called by
 # absolute path. Find yours with: command -v uv
 
-0,20,40 * * * * cd /Users/hermesagent/development/avo-forecast && /Users/hermesagent/miniconda3/bin/uv run python -m experiments.kalshi_quant.capture snapshot >> data/capture.log 2>&1
-12   * * * * cd /Users/hermesagent/development/avo-forecast && /Users/hermesagent/miniconda3/bin/uv run python -m experiments.kalshi_quant.capture settle   >> data/capture.log 2>&1
+0,15,30,45 * * * * cd /Users/hermesagent/development/avo-forecast && /Users/hermesagent/miniconda3/bin/uv run python -m experiments.kalshi_quant.capture snapshot --max-close-hours 24 >> data/capture.log 2>&1
+7          * * * * cd /Users/hermesagent/development/avo-forecast && /Users/hermesagent/miniconda3/bin/uv run python -m experiments.kalshi_quant.capture snapshot >> data/capture.log 2>&1
+52         * * * * cd /Users/hermesagent/development/avo-forecast && /Users/hermesagent/miniconda3/bin/uv run python -m experiments.kalshi_quant.capture settle   >> data/capture.log 2>&1

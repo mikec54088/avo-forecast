@@ -18,27 +18,29 @@
     <key>WorkingDirectory</key>
     <string>/Users/hermesagent/development/avo-forecast</string>
 
-    <!-- Pinned to wall-clock :00/:20/:40. Was :00/:15/:30/:45 until
-         2026-08-25, when the open universe grew 1.32M -> 2.08M markets in a
-         day (essentially all MVE parlays) and sweep time went 412s -> 925s,
-         over the 900s slot. launchd will not start a second copy while one
-         runs, so an overrun silently becomes a dropped tick -- one 30-minute
-         gap was already observed.
+    <!-- The full pass: every open market, hourly at :07. Was every 20 min
+         until 2026-08-25, when the universe hit 2.12M markets and a sweep took
+         941s against a 1200s slot -- 78% of the ceiling, climbing ~50k markets
+         per sweep.
 
-         20 min plus MIN_REQUEST_INTERVAL at 0.15 gives headroom to roughly 3M
-         markets. Past that, bound the sweep by close_time: max_close_ts does
-         work on open markets (a +24h window was 9 pages / 5s against 2,082
-         pages / 925s) at the cost of long-horizon price history.
+         Pacing is not a lever: page cost is max(pace, latency) and latency is
+         ~0.444s, so the sweep is latency-bound at ~2.25 req/s no matter what
+         MIN_REQUEST_INTERVAL says. The only lever is fewer pages.
+
+         Hourly moves this from 78% of its slot to ~26%, raising the ceiling
+         from 2.7M to 8.1M markets, and cuts daily request volume from ~152k
+         pages to ~52k. Near-close resolution is not lost -- it improves, and
+         moves to the -near agent, which runs every 15 min at 3s a pass.
+         What this pass preserves is long-horizon price history (now hourly
+         rather than 20-minutely) and a backstop if max_close_ts ever changes
+         meaning.
 
          StartInterval is deliberately not used: it is a relative timer that
          macOS coalesces, and observed gaps were 21m28s against a nominal
-         900s. capture.py's own lock is the backstop if a run somehow
-         overlaps. -->
+         900s. -->
     <key>StartCalendarInterval</key>
     <array>
-        <dict><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Minute</key><integer>20</integer></dict>
-        <dict><key>Minute</key><integer>40</integer></dict>
+        <dict><key>Minute</key><integer>7</integer></dict>
     </array>
 
     <key>StandardOutPath</key>

@@ -58,12 +58,19 @@ SETTLE_MAX_PAGES_PER_SERIES = 20
 
 RESOLUTION_COLS = ["ticker", "series_ticker", "resolved_at", "outcome", "settlement_value"]
 
+# A bounded sweep (--max-close-hours) walked 9 pages on 2026-08-25 against
+# 2,118 unbounded. If max_close_ts is ever ignored -- and this API silently
+# ignores unknown parameters rather than rejecting them -- a bounded run would
+# quietly become a full sweep every 15 minutes, roughly tripling our request
+# volume. Stop well short of that and say so loudly.
+BOUNDED_MAX_PAGES = 200
 
-def _write(df: pd.DataFrame, kind: str) -> Path:
+
+def _write(df: pd.DataFrame, kind: str, label: str = "") -> Path:
     now = datetime.now(timezone.utc)
     out_dir = DATA_ROOT / kind / f"date={now:%Y-%m-%d}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"{now:%H%M%S}.parquet"
+    path = out_dir / f"{now:%H%M%S}{label}.parquet"
     df.to_parquet(path, index=False)
     return path
 
@@ -124,15 +131,37 @@ def _row(m: MarketSnapshot) -> dict[str, object]:
     }
 
 
-def snapshot() -> Path:
-    with _Lock("snapshot"):
+def snapshot(max_close_hours: float | None = None) -> Path:
+    """Append top-of-book for every quotable market.
+
+    With `max_close_hours` the sweep is bounded to markets closing inside that
+    window. That is not a sampling shortcut: every market passes through the
+    window before it closes, so a bounded pass run often enough still captures
+    an entry price for everything that becomes scoreable. What it gives up is
+    long-horizon price history, which the unbounded pass preserves at a lower
+    cadence.
+    """
+    bounded = max_close_hours is not None
+    lock_name = "snapshot_near" if bounded else "snapshot"
+    label = "-near" if bounded else ""
+    max_close_ts = (
+        int((datetime.now(timezone.utc) + timedelta(hours=max_close_hours)).timestamp())
+        if bounded else None
+    )
+    with _Lock(lock_name):
         rows: list[dict[str, object]] = []
         seen = pages = no_book = unparsed = 0
         unparsed_samples: list[str] = []
+        overran = False
         started = datetime.now(timezone.utc)
         with KalshiClient() as client:
-            for markets, fetched_at in client.iter_market_pages(status="open"):
+            for markets, fetched_at in client.iter_market_pages(
+                status="open", max_close_ts=max_close_ts
+            ):
                 pages += 1
+                if bounded and pages > BOUNDED_MAX_PAGES:
+                    overran = True
+                    break
                 seen += len(markets)
                 for raw in markets:
                     # A single malformed market must not cost the whole sweep.
@@ -153,14 +182,22 @@ def snapshot() -> Path:
                     rows.append(_row(m))
 
         df = pd.DataFrame(rows)
-        path = _write(df, "snapshots")
+        path = _write(df, "snapshots", label)
         elapsed = (datetime.now(timezone.utc) - started).total_seconds()
         mve = int(df["is_mve"].sum()) if not df.empty else 0
+        scope = f"<={max_close_hours:g}h" if bounded else "all"
         print(
-            f"{len(rows)} quotable markets ({mve} mve) from {seen} seen over {pages} pages "
-            f"in {elapsed:.0f}s; {no_book} skipped for no two-sided book; "
-            f"{unparsed} unparsed -> {path}"
+            f"[{scope}] {len(rows)} quotable markets ({mve} mve) from {seen} seen "
+            f"over {pages} pages in {elapsed:.0f}s; {no_book} skipped for no "
+            f"two-sided book; {unparsed} unparsed; {client.rate_limited} rate-limited "
+            f"of {client.requests} requests -> {path}"
         )
+        if overran:
+            print(
+                f"  !!! bounded sweep exceeded {BOUNDED_MAX_PAGES} pages -- max_close_ts "
+                f"may be being ignored. Check before this runs again; an ignored "
+                f"filter turns this into a full sweep every tick."
+            )
         for line in unparsed_samples:
             print(f"  unparsed: {line}")
         return path
@@ -317,7 +354,8 @@ def settle(
         unresolved = sum(len(w) for w in by_series.values())
         print(
             f"{len(rows)} resolutions over {pages} requests in {elapsed:.0f}s; "
-            f"{unresolved} still pending (closed but not yet settled) -> {path}"
+            f"{unresolved} still pending (closed but not yet settled); "
+            f"{client.rate_limited} rate-limited -> {path}"
         )
         if mismatches:
             print(f"  !!! {len(mismatches)} result/settlement_value disagreements:")
@@ -333,9 +371,13 @@ def main() -> None:
         "--snapshot-days", type=float, default=SETTLE_SNAPSHOT_DAYS,
         help="settle only: how far back to scan snapshots (default %(default)s)",
     )
+    ap.add_argument(
+        "--max-close-hours", type=float, default=None,
+        help="snapshot only: bound the sweep to markets closing within N hours",
+    )
     args = ap.parse_args()
     if args.mode == "snapshot":
-        snapshot()
+        snapshot(max_close_hours=args.max_close_hours)
     else:
         settle(snapshot_days=args.snapshot_days)
 

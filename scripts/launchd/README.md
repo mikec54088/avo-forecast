@@ -43,25 +43,47 @@ Do this only when no sweep is in flight (`pgrep -f "capture.*snapshot"`);
 macOS coalesces it: measured gaps were 21m28s against a nominal 900s, i.e. ~68
 snapshots/day instead of 96.
 
-- **snapshot** — `:00 :20 :40`. Was every 15 min until 2026-08-25, when the
-  open universe grew 1.32M -> 2.08M markets in a day (essentially all MVE
-  parlay combos) and sweep time went 412s -> 925s, past the 900s slot. launchd
-  will not start a second copy while one runs, so an overrun silently becomes a
-  dropped tick; one 30-minute gap was observed before this change.
+| agent | when | cost |
+|---|---|---|
+| `kalshi-snapshot-near` | `:00 :15 :30 :45` | 9 pages, ~3s |
+| `kalshi-snapshot` | `:07` hourly | ~2,100 pages, ~940s |
+| `kalshi-settle` | `:52` hourly | ~90 requests, ~40s |
 
-  **Watch this.** Sweep time tracks universe size almost linearly, and the
-  universe is volatile. 20 min plus `MIN_REQUEST_INTERVAL` at 0.15 holds to
-  roughly 3M markets. Past that, bound the sweep by close time — `max_close_ts`
-  does work on open markets (a +24h window measured 9 pages / 5s against 2,082
-  pages / 925s, and is only 3.5% MVE), at the cost of long-horizon price
-  history. There is no MVE filter; every plausible parameter is silently
-  ignored, and filtering after the fetch saves nothing because the cost is
-  walking pages.
+**The near pass carries the scoring load.** It sweeps only markets closing
+within 24h (`--max-close-hours 24`). Every market passes through that window
+before it closes, so this alone captures an entry price for everything that
+becomes scoreable — at finer resolution than the full sweep ever managed, for
+0.3% of the requests. It is also 0% MVE, because the cross-category parlays
+reference events days out.
 
-      grep -oE 'in [0-9]+s' data/capture.log | tail -20   # duration trend
-- **settle** — `:12`, inside the gap between sweeps. Cheap (145 requests / 35s
-  on a first run, 40 / 10s once caught up) and idempotent, so a missed run
-  costs nothing.
+**The full pass is for long-horizon history and as a backstop.** It was every
+20 min until 2026-08-25, when the universe hit 2.12M markets and a sweep took
+941s against a 1200s slot. Hourly moves it from 78% of its slot to ~26% and
+raises the ceiling from 2.7M to 8.1M markets. Daily request volume drops from
+~152k pages to ~52k.
+
+**Pacing is not a lever.** Page cost is `max(pace, latency)` and latency is
+~0.444s, so the sweep is latency-bound at ~2.25 req/s regardless of
+`MIN_REQUEST_INTERVAL` — two sweeps at 0.22 and 0.15 came out at 0.44428 and
+0.44429 s/page. The only lever is fewer pages. Measured safety: 3.5 req/s over
+69 min drew zero 429s; 8 req/s drew 1,964 in 13 minutes.
+
+**There is no MVE filter.** `exclude_mve`, `mve`, `is_mve`,
+`exclude_multivariate`, `multivariate`, `market_type` are all silently ignored
+— they return identical MVE-heavy results rather than an error. `max_close_ts`
+*does* work on open markets but is silently ignored on `status=settled`. An
+ignored parameter is indistinguishable from a working one without checking the
+response, so never trust a filter you have not verified against output.
+
+Because of that, the near pass aborts past `BOUNDED_MAX_PAGES` (200) and says
+so loudly: if `max_close_ts` ever stops working, a bounded run would silently
+become a full sweep every 15 minutes.
+
+### Watch these
+
+    grep -oE '[0-9]+ rate-limited' data/capture.log | tail -20   # should be 0
+    grep -c 'may be being ignored' data/capture.log              # should be 0
+    grep -oE 'in [0-9]+s' data/capture.log | tail -20            # duration trend
 
 Snapshots are the only calendar-bound part of the system: top-of-book at a given
 instant is gone forever if nothing captured it. Settlements stay queryable and

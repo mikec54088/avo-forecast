@@ -18,16 +18,15 @@
     <key>WorkingDirectory</key>
     <string>/Users/hermesagent/development/avo-forecast</string>
 
-    <!-- Hourly at :12, inside the gap between snapshot sweeps. Snapshots start
-         on the quarter hour and have taken up to 585s, so they occupy roughly
-         :00-:10, :15-:25, :30-:40, :45-:55. Separate locks mean the two jobs
-         cannot block each other, but keeping them disjoint avoids doubling the
-         request rate into Kalshi's limiter.
+    <!-- Hourly at :52. Moved from :12 on 2026-08-25 when the full sweep went
+         hourly at :07 and now occupies roughly :07-:23 (longer as the universe
+         grows). :52 stays clear of it. The 3-second -near passes on the
+         quarter hour are too short to matter either way.
          settle is cheap (145 requests / 35s on first run, 40 / 10s when little
          is pending) and idempotent, so a missed run costs nothing. -->
     <key>StartCalendarInterval</key>
     <array>
-        <dict><key>Minute</key><integer>12</integer></dict>
+        <dict><key>Minute</key><integer>52</integer></dict>
     </array>
 
     <key>StandardOutPath</key>

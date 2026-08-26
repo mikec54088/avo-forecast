@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.avoforecast.kalshi-snapshot-near</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/hermesagent/miniconda3/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>-m</string>
+        <string>experiments.kalshi_quant.capture</string>
+        <string>snapshot</string>
+        <string>--max-close-hours</string>
+        <string>24</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/hermesagent/development/avo-forecast</string>
+
+    <!-- The near pass: markets closing within 24h, every 15 min.
+         Measured 2026-08-25: 9 pages, 8,280 markets, 1,984 quotable, 0 MVE,
+         3 seconds. Against 2,118 pages / 941s for the unbounded sweep.
+
+         This carries the scoring load. Every market passes through the 24h
+         window before it closes, so this alone captures an entry price for
+         everything that becomes scoreable -- and at finer resolution than the
+         full sweep ever managed. The hourly full pass exists for long-horizon
+         price history and as a backstop if max_close_ts ever changes meaning.
+
+         Takes its own lock (snapshot_near), so it is never blocked by a full
+         sweep in flight. Overlap costs ~3s of doubled request rate a few times
+         a day, which is nothing. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Minute</key><integer>45</integer></dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/capture.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/capture.log</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
