@@ -14,8 +14,12 @@ import pandas as pd
 import pytest
 
 from avo.core.holdout import HoldoutViolation, assert_clean
-from avo.core.types import Candidate
-from experiments.kalshi_quant.experiment import KalshiQuantExperiment, paper_trade
+from avo.core.types import Candidate, Score
+from experiments.kalshi_quant.experiment import (
+    KalshiQuantExperiment,
+    paper_trade,
+    passes_pnl_gate,
+)
 from experiments.kalshi_quant.observations import (
     MAX_ENTRY_STALENESS_MINUTES,
     SeriesHistory,
@@ -221,3 +225,44 @@ def test_paper_trade_pays_the_spread(data_root):
         # Won every trade, yet the return per contract is capped at 1 - price
         # paid, and price paid crossed the ask and added the fee.
         assert out["pnl_per_contract"] < 1.0
+
+
+def _score_with(secondary: dict) -> Score:
+    return Score(candidate_id="t", primary=0.0, primary_ci=(0.0, 0.0),
+                 n_observations=1000, secondary=secondary)
+
+
+def test_pnl_gate_passes_only_on_a_clustered_interval_above_zero():
+    """Requiring the mean alone would pass noise. On 2026-08-31 the 20-90 min
+    band had a positive mean whose series-clustered interval spanned zero."""
+    ok, why = passes_pnl_gate(_score_with(
+        {"pnl_n_fills": 5000.0, "pnl_per_contract": 0.02, "pnl_se_clustered": 0.005}))
+    assert ok, why
+    ok, why = passes_pnl_gate(_score_with(
+        {"pnl_n_fills": 5000.0, "pnl_per_contract": 0.02, "pnl_se_clustered": 0.02}))
+    assert not ok and "spans 0" in why
+
+
+def test_pnl_gate_fails_a_loser_and_says_so():
+    ok, why = passes_pnl_gate(_score_with(
+        {"pnl_n_fills": 5000.0, "pnl_per_contract": -0.05, "pnl_se_clustered": 0.005}))
+    assert not ok and "loses money" in why
+
+
+def test_pnl_gate_refuses_to_judge_too_few_fills():
+    """A lucky handful of trades must not read as an edge."""
+    ok, why = passes_pnl_gate(_score_with(
+        {"pnl_n_fills": 10.0, "pnl_per_contract": 0.5, "pnl_se_clustered": 0.001}))
+    assert not ok and "too few fills" in why
+    ok, why = passes_pnl_gate(_score_with({"pnl_n_fills": 0.0}))
+    assert not ok and "no position" in why
+
+
+def test_pnl_gate_and_skill_can_disagree(data_root):
+    """The reason the gate exists. A candidate may post positive Brier skill
+    and still fail on money; nothing in scoring.py would reveal that."""
+    exp, entries = KalshiQuantExperiment(), load_entries(data_root)
+    c = _candidate(T0)
+    s = exp.score(c, exp.load_candidate(c), entries=entries, history=SeriesHistory(entries))
+    ok, why = passes_pnl_gate(s)
+    assert isinstance(ok, bool) and why

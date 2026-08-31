@@ -11,6 +11,7 @@ see docs/ROADMAP.md Phase 2.
 from __future__ import annotations
 
 from avo.core import registry
+from experiments.kalshi_quant.experiment import passes_pnl_gate
 from experiments.kalshi_quant.observations import (
     ENTRY_POLICY,
     SeriesHistory,
@@ -66,6 +67,12 @@ def main() -> None:
             verdict = " PROFITABLE" if m - 1.96 * se > 0 else (
                 " losing" if m + 1.96 * se < 0 else " ~zero")
         print(f"{name:<{w}}  {m:>+13.4f}  {ci:>28}  {n:>7,}{verdict}")
+
+    # The gate. Brier skill is the search signal; this is the objective.
+    print(f"\n{'candidate':<{w}}  P&L gate")
+    for name, s in rows:
+        ok, why = passes_pnl_gate(s)
+        print(f"{name:<{w}}  {'PASS' if ok else 'FAIL'}  {why}")
 
     print(f"\nmarket brier (the denominator): "
           f"{rows[0][1].secondary.get('market_brier', float('nan')):.4f}")

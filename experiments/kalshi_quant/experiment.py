@@ -23,6 +23,61 @@ from experiments.kalshi_quant.scoring import (
 CONTRACT = "forecast(market: MarketSnapshot, context: ForecastContext) -> float"
 
 
+# The P&L gate. ROADMAP Phase 2 calls for a "pessimistic fill model for the
+# secondary P&L gate"; this is the gate half. It does NOT touch fitness --
+# INVARIANT #2 keeps Brier skill as `primary` and selection still sorts on that
+# alone. The gate answers a different question: is this skill worth money?
+#
+# It exists because the two demonstrably disagree. On 2026-08-31,
+# baseline_sharpened scored +0.0286 skill (CI excluding zero) while returning
+# -0.0020 per contract. An agent optimising Brier finds that kind of candidate
+# first, because correcting an estimator is easier than forecasting.
+#
+# A candidate must clear the spread, not merely beat the midpoint: the cost of
+# crossing plus fees is ~2 probability points even on the tightest books, while
+# every bias measured so far is 1-3 points.
+PNL_GATE_MIN_FILLS = 200
+
+
+def passes_pnl_gate(score: Score) -> tuple[bool, str]:
+    """Would this candidate have made money, allowing for noise?
+
+    Returns (passed, reason). Advisory: nothing in this file drops a candidate
+    for failing, because a failing candidate is still evidence. Callers -- and
+    core/selection.py when it exists -- decide what to do with the verdict.
+
+    Requires the lower bound of the series-clustered 95% interval to exceed
+    zero. Two deliberate choices:
+
+    - Clustered, not i.i.d. Observations are dominated by a few series (MLB
+      prop families especially), and on this data the two disagree about
+      whether a band is profitable.
+    - Lower bound, not the mean. A mean above zero on 20,000 correlated
+      observations is weak evidence; requiring the interval to clear zero is
+      the difference between "made money" and "did not lose money".
+
+    A candidate with too few fills is not judged either way -- PNL_GATE_MIN_FILLS
+    guards against a lucky handful of trades reading as an edge.
+    """
+    n = int(score.secondary.get("pnl_n_fills", 0))
+    if n < PNL_GATE_MIN_FILLS:
+        if n == 0:
+            return False, "no position taken (never disagrees with the market)"
+        return False, f"too few fills to judge ({n} < {PNL_GATE_MIN_FILLS})"
+
+    mean = score.secondary.get("pnl_per_contract", float("nan"))
+    se = score.secondary.get("pnl_se_clustered", float("nan"))
+    if mean != mean or se != se:
+        return False, "P&L not measurable"
+
+    lo = mean - 1.96 * se
+    if lo > 0:
+        return True, f"profitable: {mean:+.4f}/contract, 95% CI lower bound {lo:+.4f}"
+    if mean + 1.96 * se < 0:
+        return False, f"loses money: {mean:+.4f}/contract"
+    return False, f"not distinguishable from zero: {mean:+.4f}/contract, CI spans 0"
+
+
 def _pct(sorted_vals: list[float], q: float) -> float:
     if not sorted_vals:
         return float("nan")
