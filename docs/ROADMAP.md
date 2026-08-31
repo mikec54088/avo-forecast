@@ -44,6 +44,24 @@ shrunk-to-0.5) score ~0 skill and are statistically indistinguishable from each
 other, **and** `baseline_sharpened` has been read as the tripwire it is rather
 than as a result.
 
+> **Open before Phase 3** (measured 2026-08-31 on 77,966 observations, 630
+> series; run `uv run python scripts/score_baselines.py`):
+>
+> 1. **`ENTRY_POLICY`** — "last snapshot before resolution" mixes a 20-minute
+>    price with a two-day-old one (median 77 min, p90 603). Staleness inflates
+>    Brier skill but not P&L. Recommended: cap at <=60 min.
+> 2. **`market_prob`** — leave it. Fresh+tight books are unbiased (+0.0011, CI
+>    includes zero, n=13,255); the shading is mostly a staleness artifact.
+>    Re-measure after (1).
+> 3. **Enforce the P&L gate**, and give `bootstrap_ci` the series-clustered
+>    treatment `paper_trade` already has.
+>
+> The governing number: the cost hurdle is **~2 probability points** (1c
+> half-spread + 1c fee) even on the tightest books, while measurable biases are
+> 1-3 points. `baseline_sharpened` scored +0.0286 skill and returned
+> -0.0020/contract. The target is not "beat the midpoint" but "beat it by >2
+> points on a subset identifiable in advance".
+
 > **This criterion is necessary but not sufficient — do not treat passing it as
 > a clean scorer.** The original control set was asymmetric: `baseline_market`
 > sits on the price and `baseline_shrunk` pulls *toward* 0.5, so nothing moved

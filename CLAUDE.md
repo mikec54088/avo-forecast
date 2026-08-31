@@ -124,7 +124,13 @@ that no later work can recover.
    If `baseline_sharpened` scores clearly positive, that is not a discovery —
    it means `market_prob` needs deciding (**G2**), not that anything was found.
 
-3. **Stop and report before Phase 3.** Phase gate G4. Phase 3 (hand-writing
+3. **Stop and report before Phase 3.** Phase gate G4. Three G2 decisions are
+   open and listed in `docs/ROADMAP.md` Phase 2: `ENTRY_POLICY`, `market_prob`,
+   and enforcing the P&L gate. Skill and money already disagree —
+   `baseline_sharpened` scores +0.0286 while returning -0.0020/contract,
+   because the ~2-point cost of crossing the spread exceeds any bias we can
+   measure. Do not hand-write candidates against a fitness that is still
+   moving; they would all need rescoring. Phase gate G4. Phase 3 (hand-writing
    8-10 real candidates) is the first phase that generates new strategies
    rather than plumbing, and `docs/ROADMAP.md` calls it the highest-value
    phase. Do not start it on the back of a scorer whose denominator question
