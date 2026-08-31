@@ -53,6 +53,25 @@ class Entry:
     def ticker(self) -> str:
         return self.market.ticker
 
+    @property
+    def staleness_minutes(self) -> float:
+        """Minutes between the entry snapshot and the outcome becoming known.
+
+        Measured 2026-08-31 over 77,966 observations: median 77 min, p90 603,
+        p99 1,913. It is NOT a capture defect -- for 100% of stale entries
+        sampled, the entry IS the last time that market had a two-sided book,
+        so no cadence change produces a fresher price. Books go one-sided near
+        close and never come back.
+
+        It matters because it inflates Brier skill without inflating P&L. A
+        stale price has not yet absorbed the drift toward the eventual outcome,
+        so any transform that sharpens away from 0.5 recovers part of that
+        drift and scores well for it. Split by staleness, a mild logit sharpen
+        scored +0.0011 (CI includes zero) on fresh tight books and +0.0762 on
+        stale wide ones -- and made no money in either.
+        """
+        return (self.resolved_at - self.market.observed_at).total_seconds() / 60.0
+
 
 def _files(kind: str, root: Path) -> list[str]:
     return sorted(glob.glob(str(root / kind / "date=*" / "*.parquet")))

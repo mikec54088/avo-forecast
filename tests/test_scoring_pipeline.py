@@ -15,7 +15,7 @@ import pytest
 
 from avo.core.holdout import HoldoutViolation, assert_clean
 from avo.core.types import Candidate
-from experiments.kalshi_quant.experiment import KalshiQuantExperiment
+from experiments.kalshi_quant.experiment import KalshiQuantExperiment, paper_trade
 from experiments.kalshi_quant.observations import (
     SeriesHistory,
     load_entries,
@@ -164,3 +164,40 @@ def test_a_broken_candidate_does_not_kill_the_run(data_root):
         s = exp.score(_candidate(T0), mod, entries=entries, history=h)
         assert s.n_observations == 0
         assert "error" in s.notes or "no usable" in s.notes
+
+
+def test_score_reports_staleness_and_pnl(data_root):
+    """A skill number is not readable without these. Measured 2026-08-31,
+    baseline_sharpened scored +0.0286 skill while returning -0.0020/contract
+    with a series-clustered CI spanning zero -- Brier skill and money pointed
+    in opposite directions, and only the secondary metrics showed it."""
+    exp, entries = KalshiQuantExperiment(), load_entries(data_root)
+    c = _candidate(T0)
+    s = exp.score(c, exp.load_candidate(c), entries=entries, history=SeriesHistory(entries))
+    for key in ("staleness_median_min", "staleness_p90_min",
+                "pnl_per_contract", "pnl_n_fills", "pnl_fill_rate"):
+        assert key in s.secondary, f"{key} missing from Score.secondary"
+    assert s.secondary["staleness_median_min"] > 0
+
+
+def test_paper_trade_is_flat_when_the_candidate_agrees_with_the_market(data_root):
+    """baseline_market forecasts the midpoint exactly, so it never has a reason
+    to trade. Zero fills is the correct answer, not a degenerate one."""
+    entries = load_entries(data_root)
+    out = paper_trade(entries, [e.market.implied_prob for e in entries])
+    assert out["pnl_n_fills"] == 0.0
+    assert out["pnl_fill_rate"] == 0.0
+
+
+def test_paper_trade_pays_the_spread(data_root):
+    """A candidate that is right about direction can still lose money. This is
+    the whole reason P&L is reported alongside skill: INVARIANT #4 makes fills
+    pessimistic, and the spread plus fee is ~2 probability points."""
+    entries = [e for e in load_entries(data_root) if e.outcome == 1]
+    assert entries, "fixture needs a yes-resolving market"
+    # Forecast 1.0 on a market that resolved yes: maximally correct.
+    out = paper_trade(entries, [1.0] * len(entries))
+    if out["pnl_n_fills"]:
+        # Won every trade, yet the return per contract is capped at 1 - price
+        # paid, and price paid crossed the ask and added the fee.
+        assert out["pnl_per_contract"] < 1.0

@@ -48,10 +48,33 @@ def main() -> None:
         cb = s.secondary.get("candidate_brier", float("nan"))
         print(f"{name:<{w}}  {s.primary:+8.4f}  {ci:>20}  {cb:7.4f}  {s.n_observations:>6,}")
 
+    # Brier skill and money can point in opposite directions. Print them side
+    # by side so a positive skill number is never read as an edge on its own.
+    print(f"\n{'candidate':<{w}}  {'P&L/contract':>13}  {'95% CI (series-clustered)':>28}  {'fills':>7}")
+    for name, s in rows:
+        m = s.secondary.get("pnl_per_contract", float("nan"))
+        se = s.secondary.get("pnl_se_clustered", float("nan"))
+        n = int(s.secondary.get("pnl_n_fills", 0))
+        if not n:
+            # A candidate that never disagrees with the market takes no
+            # position. That is not a missing number, it is a flat book.
+            print(f"{name:<{w}}  {'--':>13}  {'never disagrees with market':>28}  {0:>7}")
+            continue
+        ci = f"[{m - 1.96 * se:+.4f},{m + 1.96 * se:+.4f}]" if se == se else "n/a"
+        verdict = ""
+        if se == se:
+            verdict = " PROFITABLE" if m - 1.96 * se > 0 else (
+                " losing" if m + 1.96 * se < 0 else " ~zero")
+        print(f"{name:<{w}}  {m:>+13.4f}  {ci:>28}  {n:>7,}{verdict}")
+
     print(f"\nmarket brier (the denominator): "
           f"{rows[0][1].secondary.get('market_brier', float('nan')):.4f}")
-    print(f"fillable fraction: {rows[0][1].secondary.get('fillable_fraction', 0):.1%} "
+    print(f"fill rate: {rows[0][1].secondary.get('pnl_fill_rate', 0):.1%} "
           f"(simulate_fill accepts; the rest are scoreable but not tradeable)")
+    print(f"entry staleness: median "
+          f"{rows[0][1].secondary.get('staleness_median_min', float('nan')):.0f} min, "
+          f"p90 {rows[0][1].secondary.get('staleness_p90_min', float('nan')):.0f} min "
+          f"(inflates skill, not P&L -- see observations.Entry.staleness_minutes)")
     print("\nexpected:")
     for name, note in EXPECTED.items():
         print(f"  {name:<{w}}  {note}")
