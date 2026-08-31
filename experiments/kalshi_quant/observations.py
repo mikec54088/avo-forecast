@@ -27,18 +27,32 @@ from experiments.kalshi_quant.types import ForecastContext, MarketSnapshot, Reso
 
 DATA_ROOT = Path(__file__).resolve().parents[2] / "data" / "kalshi_quant"
 
-# UNDECIDED, and it changes every score. Currently the last snapshot strictly
-# before resolution, which is what every number reported on 2026-08-24 used.
+# DECIDED 2026-08-31 (G2, approved). The entry is the last snapshot strictly
+# before resolution, and it must be no older than MAX_ENTRY_STALENESS_MINUTES.
 #
-# It is also the most generous choice available: a candidate forecasts with the
-# maximum information the capture ever held, moments before the outcome is
-# known. A fixed lead time before close_time (say 1h) would be more honest about
-# what "forecasting" means and more comparable across markets, at the cost of
-# discarding markets whose capture does not span that lead.
+# Without the cap the observation set silently mixed a 20-minute-old price with
+# a two-day-old one: median staleness 77 min, p90 603, p99 1,913. That is not a
+# capture defect and no cadence change fixes it -- for 100% of stale entries
+# sampled, the entry IS the last time that market had a two-sided book. Books go
+# one-sided approaching close and do not come back.
 #
-# Left as-is so this run stays comparable with what has already been reported.
-# Revisit alongside the market_prob question -- both shape the observation set.
-ENTRY_POLICY = "last_before_resolution"
+# It had to be capped because staleness inflates Brier skill without inflating
+# P&L, so the primary fitness was the contaminated one. A stale price has not
+# absorbed the drift toward the eventual outcome, and any transform sharpening
+# away from 0.5 recovers part of that drift and is paid for it. Split by
+# staleness, a mild logit sharpen scored +0.0011 (CI includes zero) on fresh
+# tight books against +0.0762 on stale wide ones -- and made money in neither.
+#
+# 60 rather than 20 minutes: the <=20 band is the genuinely uncertain markets
+# (market Brier 0.154 against 0.089 for stale ones) and is where that sharpen
+# actually LOSES money (-0.0075/contract, CI excludes zero). Capping there would
+# select for the hardest markets while cutting the sample 77%. At 60 min the set
+# retains 35,201 of 79,113 observations (44.5%).
+#
+# Changing this rescores everything, so it is G2. Revisit only with the
+# market_prob question, since both reshape the observation set.
+ENTRY_POLICY = "last_before_resolution_within_60min"
+MAX_ENTRY_STALENESS_MINUTES = 60.0
 
 
 @dataclass(frozen=True)
@@ -122,6 +136,16 @@ def load_entries(data_root: Path | None = None) -> list[Entry]:
     if j.empty:
         return []
     j = j.sort_values("observed_at").groupby("ticker", as_index=False).last()
+
+    # ENTRY_POLICY staleness cap. Applied after picking the last snapshot, not
+    # before: an entry is only meaningful if it is BOTH the freshest price we
+    # hold and fresh in absolute terms.
+    resolved = pd.to_datetime(j["resolved_at"], utc=True)
+    observed = pd.to_datetime(j["observed_at"], utc=True)
+    stale_min = (resolved - observed).dt.total_seconds() / 60.0
+    j = j[stale_min <= MAX_ENTRY_STALENESS_MINUTES]
+    if j.empty:
+        return []
 
     return [
         Entry(

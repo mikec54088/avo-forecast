@@ -17,6 +17,7 @@ from avo.core.holdout import HoldoutViolation, assert_clean
 from avo.core.types import Candidate
 from experiments.kalshi_quant.experiment import KalshiQuantExperiment, paper_trade
 from experiments.kalshi_quant.observations import (
+    MAX_ENTRY_STALENESS_MINUTES,
     SeriesHistory,
     load_entries,
 )
@@ -39,17 +40,21 @@ def _snap_row(ticker: str, observed_at: datetime, bid: float, ask: float,
 
 @pytest.fixture
 def data_root(tmp_path):
-    """Three markets. m1/m2 resolve; m3 never does and must not appear."""
+    """Markets chosen to exercise every entry rule at once.
+
+    m1 kept  - has a stale snapshot AND a fresh one; the fresh one must win
+    m2 kept  - single snapshot, 30 min before resolution
+    m3 gone  - captured but never resolved
+    m4 gone  - its only snapshot postdates its resolution (lookahead)
+    m5 gone  - resolved, but its freshest snapshot is 120 min stale (over cap)
+    """
     snaps = [
-        # m1: two observations, the later one is the entry
-        _snap_row("m1", T0, 0.30, 0.40),
-        _snap_row("m1", T0 + timedelta(hours=1), 0.60, 0.70),
-        # m2: one observation, in a second series
-        _snap_row("m2", T0 + timedelta(hours=2), 0.10, 0.20, series="KXOTHER"),
-        # m3: captured but unresolved
+        _snap_row("m1", T0, 0.30, 0.40),                                  # 180 min stale
+        _snap_row("m1", T0 + timedelta(hours=2, minutes=50), 0.60, 0.70),  # 10 min stale
+        _snap_row("m2", T0 + timedelta(hours=3, minutes=30), 0.10, 0.20, series="KXOTHER"),
         _snap_row("m3", T0, 0.45, 0.55),
-        # m4: its only snapshot is AFTER resolution -- must be dropped
         _snap_row("m4", T0 + timedelta(hours=9), 0.50, 0.60),
+        _snap_row("m5", T0 + timedelta(hours=4), 0.40, 0.50),              # 120 min stale
     ]
     sd = tmp_path / "snapshots" / "date=2026-08-01"
     sd.mkdir(parents=True)
@@ -62,6 +67,8 @@ def data_root(tmp_path):
          "resolved_at": T0 + timedelta(hours=4), "settlement_value": 0.0},
         {"ticker": "m4", "series_ticker": "KXTEST", "outcome": 1,
          "resolved_at": T0 + timedelta(hours=5), "settlement_value": 1.0},
+        {"ticker": "m5", "series_ticker": "KXTEST", "outcome": 1,
+         "resolved_at": T0 + timedelta(hours=6), "settlement_value": 1.0},
     ]
     rd = tmp_path / "resolutions" / "date=2026-08-01"
     rd.mkdir(parents=True)
@@ -80,12 +87,25 @@ def _candidate(created_at: datetime, cid: str = "t") -> Candidate:
 
 def test_only_resolved_markets_become_entries(data_root):
     entries = load_entries(data_root)
-    assert {e.ticker for e in entries} == {"m1", "m2"}, "m3 unresolved, m4 has no prior snapshot"
+    assert {e.ticker for e in entries} == {"m1", "m2"}, (
+        "m3 unresolved, m4 postdates resolution, m5 over the staleness cap"
+    )
 
 
-def test_entry_is_the_last_snapshot_before_resolution(data_root):
+def test_stale_entries_are_dropped(data_root):
+    """ENTRY_POLICY caps staleness at 60 min. m5 resolved and was captured, but
+    its freshest price is 2h old -- old enough that a sharpen-away-from-0.5
+    transform scores on drift rather than on forecasting."""
+    entries = load_entries(data_root)
+    assert "m5" not in {e.ticker for e in entries}
+    assert all(e.staleness_minutes <= MAX_ENTRY_STALENESS_MINUTES for e in entries)
+
+
+def test_the_freshest_snapshot_wins_over_a_stale_one(data_root):
+    """m1 has a 180-min-stale snapshot and a 10-min one. Taking the stale price
+    would both mis-state the market and push the entry over the cap."""
     m1 = next(e for e in load_entries(data_root) if e.ticker == "m1")
-    assert m1.market.observed_at == T0 + timedelta(hours=1)
+    assert m1.staleness_minutes == pytest.approx(10.0)
     assert m1.market.implied_prob == pytest.approx(0.65)
 
 

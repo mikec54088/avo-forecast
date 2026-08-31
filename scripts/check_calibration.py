@@ -40,6 +40,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from experiments.kalshi_quant.observations import MAX_ENTRY_STALENESS_MINUTES
 from experiments.kalshi_quant.scoring import Observation, bootstrap_ci, skill_score
 
 ROOT = Path(__file__).resolve().parents[1] / "data" / "kalshi_quant"
@@ -63,8 +64,19 @@ def load() -> pd.DataFrame:
     # ordering INVARIANT #1 enforces for candidates.
     j = j[j["observed_at"] < j["resolved_at"]]
     j = j.sort_values("observed_at").groupby("ticker", as_index=False).last()
+    # Same staleness cap the scorer applies, so this report and score_baselines
+    # describe the same observation set rather than quietly diverging.
+    stale = (
+        pd.to_datetime(j["resolved_at"], utc=True)
+        - pd.to_datetime(j["observed_at"], utc=True)
+    ).dt.total_seconds() / 60.0
+    j = j[stale <= MAX_ENTRY_STALENESS_MINUTES]
     j["mid"] = (j["yes_bid"] + j["yes_ask"]) / 2.0
     j["spread"] = j["yes_ask"] - j["yes_bid"]
+    j["stale_min"] = (
+        pd.to_datetime(j["resolved_at"], utc=True)
+        - pd.to_datetime(j["observed_at"], utc=True)
+    ).dt.total_seconds() / 60.0
     return j
 
 
@@ -114,6 +126,8 @@ def main() -> None:
 
     j = load()
     print(f"observations: {len(j):,}   series: {j['ticker'].str.split('-').str[0].nunique()}")
+    print(f"entry staleness: median {j['stale_min'].median():.0f} min   "
+          f"p90 {j['stale_min'].quantile(0.9):.0f} min   max {j['stale_min'].max():.0f} min")
     print(f"median spread: {j['spread'].median():.4f}   base rate: {j['outcome'].mean():.3f}")
     print(f"market Brier (mid): {((j['mid'] - j['outcome']) ** 2).mean():.4f}"
           f"   always-0.5: {((0.5 - j['outcome']) ** 2).mean():.4f}")
@@ -130,10 +144,16 @@ def main() -> None:
     if len(low) and len(high):
         print(f"\nmean gap below 0.5: {low.mean():+.4f}   above 0.5: {high.mean():+.4f}")
         if low.mean() < 0 < high.mean():
-            print("Shading toward 0.5 PERSISTS -- decide whether market_prob stays "
-                  "the midpoint (G2).")
+            print("Shading toward 0.5 is present in this sample.")
         else:
             print("No consistent shading in this sample.")
+    print(
+        "NOTE: shading alone does NOT mean market_prob needs changing. Split by\n"
+        "staleness below -- on fresh, tight books the midpoint measured unbiased\n"
+        "(+0.0011, CI [-0.002,+0.004], n=13,255 on 2026-08-31), and the apparent\n"
+        "bias was concentrated in stale, wide ones. ENTRY_POLICY now caps entry\n"
+        "staleness, so this script run against capped data should show far less."
+    )
 
     print("\n" + "=" * 72)
     print("EXPLOITABILITY PROBE - diagnostics of the fitness, not candidates.")
@@ -145,6 +165,22 @@ def main() -> None:
         probe(tight, "FILLABLE (spread <= 0.08, simulate_fill's cap)")
     if len(wide) >= args.min_obs:
         probe(wide, "WIDE (spread > 0.08, not fillable)")
+
+    # Staleness x spread. This is the split that showed the 2026-08-24
+    # "midpoint is biased" finding to be mostly a staleness artifact: an old
+    # price has not absorbed the drift toward the outcome, so sharpening
+    # recovers drift rather than forecasting anything.
+    print("\n" + "=" * 72)
+    print("STALENESS x SPREAD -- where apparent skill actually comes from")
+    print("(entries are capped by ENTRY_POLICY, so the stale rows may be empty)")
+    for lo, hi, lbl in ((0, 20, "fresh <=20m"), (20, 90, "20-90m"),
+                        (90, 10 ** 9, "stale >90m")):
+        band = j[(j["stale_min"] >= lo) & (j["stale_min"] < hi)]
+        for tight_side in (True, False):
+            x = band[(band["spread"] <= 0.08) == tight_side]
+            if len(x) < args.min_obs:
+                continue
+            probe(x, f"{lbl} / {'TIGHT' if tight_side else 'WIDE'}")
 
 
 if __name__ == "__main__":
