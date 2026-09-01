@@ -301,21 +301,30 @@ class KalshiQuantExperiment:
         result, not a defect.
         """
         return """    from datetime import datetime, timedelta, timezone
-    _NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    _NOW = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+
+    class _R:
+        def __init__(self, i, outcome):
+            self.ticker = "KXPROBE-H%d" % i
+            self.resolved_at = _NOW - timedelta(hours=i + 1)
+            self.outcome = outcome
+
+    _HIST = [_R(i, i % 3 != 0) for i in range(40)]
 
     class _M:
-        def __init__(self, bid, ask, last=None, volume=100.0, size=10.0):
+        def __init__(self, bid, ask, last=None, volume=100.0,
+                     bid_size=10.0, ask_size=10.0, close_h=3.0, oi=None):
             self.ticker = "KXPROBE-1"
             self.event_ticker = "KXPROBE"
             self.series_ticker = "KXPROBE"
             self.title = "probe"
             self.observed_at = _NOW
-            self.close_time = _NOW + timedelta(hours=3)
+            self.close_time = _NOW + timedelta(hours=close_h)
             self.yes_bid, self.yes_ask = bid, ask
             self.last_price = last
             self.volume = volume
-            self.open_interest = volume
-            self.yes_bid_size = self.yes_ask_size = size
+            self.open_interest = volume if oi is None else oi
+            self.yes_bid_size, self.yes_ask_size = bid_size, ask_size
             self.liquidity = 1.0
             self.status = "active"
             self.price_level_structure = "linear_cent"
@@ -331,19 +340,46 @@ class KalshiQuantExperiment:
             return 0.0 < self.yes_bid < self.yes_ask < 1.0
 
     class _C:
-        def __init__(self):
+        def __init__(self, history=None):
             self.now = _NOW
-            self.series_history = {}
+            self.series_history = history or {}
 
+    _EMPTY, _FULL = _C(), _C({"KXPROBE": _HIST})
+
+    # Every field a candidate might key on has to VARY across this set, or a
+    # candidate reading it looks like it never deviates. Four legitimate
+    # candidates were falsely rejected on 2026-09-01 by a probe that swept
+    # price and held book depth, history, close time and volume constant.
     _probes = [
-        _M(0.0005, 0.0015), _M(0.01, 0.03), _M(0.10, 0.14), _M(0.30, 0.34),
-        _M(0.48, 0.52), _M(0.70, 0.74), _M(0.90, 0.94), _M(0.985, 0.995),
-        _M(0.20, 0.24, last=0.05), _M(0.20, 0.40, volume=0.0, size=1.0),
+        # price, including the boundaries where an unclipped shift escapes
+        (_M(0.0005, 0.0015), _EMPTY), (_M(0.01, 0.03), _EMPTY),
+        (_M(0.10, 0.14), _EMPTY),     (_M(0.30, 0.34), _EMPTY),
+        (_M(0.48, 0.52), _EMPTY),     (_M(0.70, 0.74), _EMPTY),
+        (_M(0.90, 0.94), _EMPTY),     (_M(0.985, 0.995), _EMPTY),
+        # spread: tight and wide
+        (_M(0.45, 0.46), _EMPTY), (_M(0.30, 0.60), _EMPTY),
+        # book depth, both directions -- microprice and depth-weighted mids
+        (_M(0.40, 0.44, bid_size=900.0, ask_size=5.0), _EMPTY),
+        (_M(0.40, 0.44, bid_size=5.0, ask_size=900.0), _EMPTY),
+        # last trade: absent, inside the book, and outside it both ways
+        (_M(0.40, 0.44, last=None), _EMPTY),
+        (_M(0.40, 0.44, last=0.42), _EMPTY),
+        (_M(0.40, 0.44, last=0.05), _EMPTY),
+        (_M(0.40, 0.44, last=0.95), _EMPTY),
+        # time to close: minutes, hours, days
+        (_M(0.40, 0.44, close_h=0.25), _EMPTY),
+        (_M(0.40, 0.44, close_h=72.0), _EMPTY),
+        (_M(0.40, 0.44, close_h=720.0), _EMPTY),
+        # volume and open interest, including a market nobody has traded
+        (_M(0.40, 0.44, volume=0.0, oi=0.0), _EMPTY),
+        (_M(0.40, 0.44, volume=5_000_000.0), _EMPTY),
+        # series history present -- memory-based candidates read this
+        (_M(0.40, 0.44), _FULL), (_M(0.20, 0.24), _FULL), (_M(0.80, 0.84), _FULL),
     ]
     _outs = []
-    for _m in _probes:
+    for _m, _c in _probes:
         try:
-            _v = mod.forecast(_m, _C())
+            _v = mod.forecast(_m, _c)
         except BaseException as _e:
             problems.append("forecast() raised at mid %.4f: %r" % (_m.implied_prob, _e))
             break
@@ -361,10 +397,10 @@ class KalshiQuantExperiment:
         _outs.append(_v)
 
     if not problems:
-        _again = [float(mod.forecast(_m, _C())) for _m in _probes]
+        _again = [float(mod.forecast(_m, _c)) for _m, _c in _probes]
         if _again != _outs:
             problems.append("forecast() is not deterministic across identical calls")
-        elif all(abs(a - m.implied_prob) < 1e-12 for a, m in zip(_outs, _probes)):
+        elif all(abs(a - m.implied_prob) < 1e-12 for a, (m, _) in zip(_outs, _probes)):
             problems.append("forecast() never deviates from implied_prob "
                             "(equivalent to baseline_market; takes no position)")
 """

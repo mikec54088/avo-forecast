@@ -191,24 +191,41 @@ def run_trial(
 
 
 def summarise(attempts: Sequence[Attempt]) -> str:
+    """Accept rate, split by what kind of failure occurred.
+
+    Timeouts are reported apart from validation failures because they mean
+    different things and have different fixes. A timeout says the budget was
+    too small -- on 2026-09-01 three of twenty ran past a 420s ceiling while
+    accepted runs reached 355s, so the ceiling sat inside the distribution. A
+    validation failure says the candidate was wrong, or the probe was.
+    """
     if not attempts:
         return "no attempts"
     ok = sum(a.accepted for a in attempts)
+    timeouts = [a for a in attempts if not a.accepted and "timed out" in a.reason]
+    invalid = [a for a in attempts if not a.accepted and "timed out" not in a.reason]
     rate = ok / len(attempts)
-    headline = f"accepted {ok}/{len(attempts)} = {rate:.0%}   (ROADMAP Phase 4 gate: >80%)"
     mean_s = sum(a.elapsed_s for a in attempts) / len(attempts)
-    lines = [headline, f"mean wall clock {mean_s:.0f}s"]
-    fails: dict[str, int] = {}
-    for a in attempts:
-        if not a.accepted:
+    slowest_ok = max((a.elapsed_s for a in attempts if a.accepted), default=0.0)
+    lines = [
+        f"accepted {ok}/{len(attempts)} = {rate:.0%}   (ROADMAP Phase 4 gate: >80%)",
+        f"  {len(timeouts):>3} timed out      (budget too small, not a bad candidate)",
+        f"  {len(invalid):>3} failed validation",
+        f"mean wall clock {mean_s:.0f}s   slowest accepted {slowest_ok:.0f}s",
+    ]
+    if invalid:
+        fails: dict[str, int] = {}
+        for a in invalid:
             fails[a.reason[:80]] = fails.get(a.reason[:80], 0) + 1
-    if fails:
-        lines.append("failure modes:")
+        lines.append("validation failures:")
         lines += [f"  {n:>3}x  {r}" for r, n in
                   sorted(fails.items(), key=lambda kv: -kv[1])]
-        lines.append(
-            "  (one failure repeated is an ambiguous CONTRACT, which is a G1"
-            "\n   problem worth fixing before generating at scale; a scatter"
-            "\n   of unrelated failures is a weak prompt or a weak backend)"
+        note = (
+            "  (one failure repeated points at the CONTRACT or the probe, not\n"
+            "   the agent -- on 2026-09-01 four 'never deviates' rejections\n"
+            "   were all caused by a probe that held book depth, history and\n"
+            "   close time constant. A scatter of unrelated failures is a\n"
+            "   weak prompt or a weak backend.)"
         )
+        lines.append(note)
     return "\n".join(lines)

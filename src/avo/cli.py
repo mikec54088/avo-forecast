@@ -24,7 +24,9 @@ def main() -> None:
     gen.add_argument("--backend", default="claude", choices=sorted(BACKENDS))
     gen.add_argument("--model", default=None, help="claude only; pins the model")
     gen.add_argument("-n", type=int, default=1, help="invocations (20 for the Phase 4 gate)")
-    gen.add_argument("--timeout", type=int, default=600, help="seconds per invocation")
+    gen.add_argument("--timeout", type=int, default=900,
+                     help="seconds per invocation; 420 put the ceiling inside the "
+                          "observed distribution (mean 263s, slowest accepted 355s)")
     gen.add_argument("--prompt-file", default=None,
                      help="file holding the prompt; omit to use the built-in probe prompt")
     gen.add_argument("--out-dir", default="runs/phase4",

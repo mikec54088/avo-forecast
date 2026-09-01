@@ -225,3 +225,49 @@ def test_stamping_reports_when_it_could_not_find_the_field(tmp_path):
     p = tmp_path / "c.py"
     p.write_text("MANIFEST = {'candidate_id': 'x'}\n")
     assert stamp_created_at(p) == ""
+
+
+# ------------------------------------------------- probe coverage regression
+
+@pytest.mark.parametrize("name,field", [
+    ("book_imbalance_tilt", "book depth"),
+    ("early_settle_aware", "close time"),
+    ("series_base_rate_blend", "series history"),
+    ("last_trade_blend", "last price"),
+    ("volume_weighted", "volume"),
+])
+def test_probe_varies_every_field_a_candidate_may_key_on(name, field):
+    """Regression for 2026-09-01: the probe swept price and held everything
+    else constant, so four legitimate generated candidates -- a depth-weighted
+    mid, a microprice, a recency tilt and a distant-close tilt -- were rejected
+    for 'never deviating'. Three committed hand-written candidates failed it
+    too, which is what proved the probe wrong rather than the candidates.
+
+    Each candidate here reads exactly one such field. If the probe stops
+    varying that field, this fails."""
+    v = validate_candidate_file(
+        REPO / "experiments" / "kalshi_quant" / "candidates" / f"{name}.py",
+        PROBE, REPO,
+    )
+    assert v.accepted, f"probe no longer varies {field}: {v.problems}"
+
+
+def test_probe_still_rejects_a_candidate_that_truly_takes_no_position():
+    """Widening the probe must not weaken the check it exists for."""
+    v = validate_candidate_file(
+        REPO / "experiments" / "kalshi_quant" / "candidates" / "baseline_market.py",
+        PROBE, REPO,
+    )
+    assert not v.accepted and "never deviates" in v.problems[0]
+
+
+def test_summary_separates_timeouts_from_validation_failures():
+    """They have different fixes: a bigger budget versus a better candidate."""
+    from avo.core.generate import Attempt
+    att = [Attempt("1", "f", True, "accepted", 300.0),
+           Attempt("2", "f", False, "backend timed out after 420s", 420.0),
+           Attempt("3", "f", False, "no forecast() function", 100.0)]
+    s = summarise(att)
+    assert "1 timed out" in s and "1 failed validation" in s
+    assert "no forecast() function" in s
+    assert "timed out" not in s.split("validation failures:")[1]
