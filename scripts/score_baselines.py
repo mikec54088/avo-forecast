@@ -43,11 +43,17 @@ def main() -> None:
         rows.append((c.candidate_id, s))
 
     w = max(len(n) for n, _ in rows)
-    print(f"{'candidate':<{w}}  {'skill':>8}  {'95% CI':>20}  {'brier':>7}  {'n':>6}")
+    print(f"{'candidate':<{w}}  {'skill':>8}  {'95% CI (clustered)':>22}"
+          f"  {'95% CI (i.i.d.)':>22}  {'x':>4}  {'n':>7}")
     for name, s in rows:
         ci = f"[{s.primary_ci[0]:+.4f},{s.primary_ci[1]:+.4f}]"
-        cb = s.secondary.get("candidate_brier", float("nan"))
-        print(f"{name:<{w}}  {s.primary:+8.4f}  {ci:>20}  {cb:7.4f}  {s.n_observations:>6,}")
+        ii = (f"[{s.secondary.get('skill_ci_iid_lo', float('nan')):+.4f},"
+              f"{s.secondary.get('skill_ci_iid_hi', float('nan')):+.4f}]")
+        r = s.secondary.get("skill_ci_width_ratio", float("nan"))
+        print(f"{name:<{w}}  {s.primary:+8.4f}  {ci:>22}  {ii:>22}  {r:>4.1f}"
+              f"  {s.n_observations:>7,}")
+    print("  clustered is the honest interval; 'x' is how many times wider it is "
+          "than i.i.d.\n  a large ratio means the result rests on a few series.")
 
     # Brier skill and money can point in opposite directions. Print them side
     # by side so a positive skill number is never read as an edge on its own.

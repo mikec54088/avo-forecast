@@ -8,7 +8,7 @@ lets earlier truth through, or an entry chosen after the outcome was known.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 import pytest
@@ -25,8 +25,13 @@ from experiments.kalshi_quant.observations import (
     SeriesHistory,
     load_entries,
 )
+from experiments.kalshi_quant.scoring import (
+    Observation,
+    bootstrap_ci,
+    bootstrap_ci_clustered,
+)
 
-T0 = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
 
 
 def _snap_row(ticker: str, observed_at: datetime, bid: float, ask: float,
@@ -266,3 +271,38 @@ def test_pnl_gate_and_skill_can_disagree(data_root):
     s = exp.score(c, exp.load_candidate(c), entries=entries, history=SeriesHistory(entries))
     ok, why = passes_pnl_gate(s)
     assert isinstance(ok, bool) and why
+
+
+def test_clustered_ci_is_wider_when_observations_cluster():
+    """The whole point. Two series with opposite behaviour: resampling
+    observations individually always draws from both and looks stable;
+    resampling series can draw one twice and reveals the spread.
+
+    Measured on real data 2026-08-31: 40,726 observations in 571 series gave
+    an i.i.d. interval of [+0.0095,+0.0128] and a clustered one of
+    [+0.0078,+0.0155] -- 2.3x wider."""
+    obs, clusters = [], []
+    for _ in range(400):
+        obs.append(Observation(0.9, 0.5, 1))   # series A: candidate right
+        clusters.append("A")
+        obs.append(Observation(0.9, 0.5, 0))   # series B: candidate wrong
+        clusters.append("B")
+    iid = bootstrap_ci(obs, n=300)
+    clu = bootstrap_ci_clustered(obs, clusters, n=300)
+    assert (clu[1] - clu[0]) > (iid[1] - iid[0])
+
+
+def test_clustered_ci_needs_more_than_one_cluster():
+    """One series is not a sample of series; say so rather than inventing an
+    interval from a single cluster."""
+    obs = [Observation(0.6, 0.5, 1)] * 50
+    lo, hi = bootstrap_ci_clustered(obs, ["only"] * 50, n=50)
+    assert lo != lo and hi != hi  # NaN
+
+
+def test_score_reports_both_intervals(data_root):
+    exp, entries = KalshiQuantExperiment(), load_entries(data_root)
+    c = _candidate(T0)
+    s = exp.score(c, exp.load_candidate(c), entries=entries, history=SeriesHistory(entries))
+    assert "skill_ci_iid_lo" in s.secondary and "skill_ci_iid_hi" in s.secondary
+    assert "series-clustered" in s.notes

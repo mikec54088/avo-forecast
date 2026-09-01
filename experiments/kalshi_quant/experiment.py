@@ -12,10 +12,16 @@ from typing import Any, Sequence
 
 from avo.core.holdout import assert_clean, eligible
 from avo.core.types import Candidate, Score
-from experiments.kalshi_quant.observations import Entry, SeriesHistory, load_entries
+from experiments.kalshi_quant.observations import (
+    ENTRY_POLICY,
+    Entry,
+    SeriesHistory,
+    load_entries,
+)
 from experiments.kalshi_quant.scoring import (
     Observation,
     bootstrap_ci,
+    bootstrap_ci_clustered,
     simulate_fill,
     skill_score,
 )
@@ -212,7 +218,15 @@ class KalshiQuantExperiment:
             )
 
         cand_brier, market_brier, skill = skill_score(obs)
-        lo, hi = bootstrap_ci(obs)
+        # primary_ci is the SERIES-CLUSTERED interval: observations are not
+        # independent, and resampling them individually reported intervals 2.3x
+        # narrower than the data supports (40,726 observations, 571 series,
+        # top 20 series 54.8% of the set). The i.i.d. interval is kept as a
+        # diagnostic -- the ratio between them says whether an edge is
+        # broad-based or rests on a handful of series.
+        series = [e.market.series_ticker for e in scored]
+        lo, hi = bootstrap_ci_clustered(obs, series)
+        ilo, ihi = bootstrap_ci(obs)
 
         # Secondary, never selected on (INVARIANT #2). Selection sorts on
         # `primary` alone; these exist so a skill number can be read honestly.
@@ -229,9 +243,17 @@ class KalshiQuantExperiment:
                 "forecast_errors": float(errors),
                 "staleness_median_min": _pct(stale, 0.50),
                 "staleness_p90_min": _pct(stale, 0.90),
+                "skill_ci_iid_lo": ilo,
+                "skill_ci_iid_hi": ihi,
+                "skill_ci_width_ratio": (
+                    (hi - lo) / (ihi - ilo) if (ihi - ilo) > 0 else float("nan")
+                ),
                 **trade,
             },
-            notes=f"entry policy: last snapshot before resolution; {errors} errors",
+            notes=(
+                f"entry policy: {ENTRY_POLICY}; primary_ci is series-clustered; "
+                f"{errors} errors"
+            ),
         )
 
     def seed_candidates(self) -> Sequence[Candidate]:

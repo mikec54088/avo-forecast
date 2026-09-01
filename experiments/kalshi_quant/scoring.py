@@ -6,6 +6,7 @@ Shared verbatim by kalshi-research so the two experiments are comparable.
 from __future__ import annotations
 
 import random
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from experiments.kalshi_quant.types import MarketSnapshot
@@ -47,6 +48,62 @@ def bootstrap_ci(
     draws = sorted(d for d in draws if d == d)
     if not draws:
         return (float("nan"), float("nan"))
+    return draws[int(alpha / 2 * len(draws))], draws[int((1 - alpha / 2) * len(draws)) - 1]
+
+
+def bootstrap_ci_clustered(
+    obs: list[Observation],
+    clusters: Sequence[str],
+    n: int = 2000,
+    alpha: float = 0.05,
+    seed: int = 0,
+) -> tuple[float, float]:
+    """Resample whole series, not individual observations.
+
+    Observations are not independent. A series contributes hundreds or
+    thousands of markets that share an underlying, a venue and a day, so when
+    one is mispriced its siblings usually are too. Resampling them individually
+    treats the sample as far larger than it effectively is.
+
+    Measured 2026-08-31 over 40,726 observations in 571 series, on the mild
+    logit sharpen: the i.i.d. interval was [+0.0095, +0.0128] and the clustered
+    one [+0.0078, +0.0155] -- **2.3x wider** for the same data. The top 20
+    series were 54.8% of all observations.
+
+    `skill_score` and the point estimate are untouched; only the interval
+    changes. Report this alongside `bootstrap_ci` rather than instead of it:
+    the two agreeing means an edge is broad-based, and a sharp divergence means
+    it rests on a handful of series, which is exactly what wants flagging.
+
+    Exact and fast because skill = 1 - sum(candidate_brier) / sum(market_brier)
+    over the same observations, so each draw only sums one triple per cluster
+    instead of rescoring every observation.
+    """
+    if len(obs) < 2 or not clusters:
+        return (float("nan"), float("nan"))
+    agg: dict[str, list[float]] = {}
+    for o, c in zip(obs, clusters, strict=True):
+        a = agg.setdefault(c, [0.0, 0.0])
+        a[0] += brier(o.forecast, o.outcome)
+        a[1] += brier(o.market_prob, o.outcome)
+    groups = list(agg.values())
+    if len(groups) < 2:
+        return (float("nan"), float("nan"))
+
+    rng = random.Random(seed)
+    k = len(groups)
+    draws: list[float] = []
+    for _ in range(n):
+        cb = mb = 0.0
+        for _ in range(k):
+            g = groups[rng.randrange(k)]
+            cb += g[0]
+            mb += g[1]
+        if mb > 0:
+            draws.append(1.0 - cb / mb)
+    if not draws:
+        return (float("nan"), float("nan"))
+    draws.sort()
     return draws[int(alpha / 2 * len(draws))], draws[int((1 - alpha / 2) * len(draws)) - 1]
 
 
