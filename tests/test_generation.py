@@ -180,3 +180,48 @@ def test_summary_reports_the_gate_and_groups_failures():
            Attempt("3", "f", False, "no forecast() function", 1.0)]
     s = summarise(att)
     assert "1/3" in s and "33%" in s and "2x" in s and "80%" in s
+
+
+# ---------------------------------------------------------------- created_at
+
+STALE = '''
+MANIFEST = {"candidate_id": "fake_stale", "generation": 1, "parent_id": None,
+            "created_at": "2020-01-01T00:00:00+00:00", "rationale": "test"}
+def forecast(market, context):
+    p = market.implied_prob
+    return min(max(p + (0.02 if p > 0.5 else -0.02), 0.001), 0.999)
+'''
+
+
+def test_created_at_is_stamped_by_the_harness_not_trusted_from_the_agent(cdir):
+    """INVARIANT #1 is enforced entirely by created_at, and the first live
+    invocation copied its siblings' timestamp instead of using its own. A stale
+    timestamp is silent -- it produces a better-looking score, not an error --
+    so the harness overwrites it rather than asking nicely."""
+    a = _run(cdir, {"fake_stale.py": STALE})
+    assert a.accepted
+    assert a.created_at, "no timestamp was stamped"
+    assert "2020" not in Path(a.kept_path).read_text(), "stale timestamp survived"
+    assert a.created_at in Path(a.kept_path).read_text()
+
+
+@pytest.mark.parametrize("manifest", [
+    'MANIFEST = {"created_at": "2020-01-01T00:00:00+00:00", "candidate_id": "x"}',
+    "MANIFEST = {'created_at': '2020-01-01T00:00:00+00:00', 'candidate_id': 'x'}",
+    'MANIFEST = {\n    "candidate_id": "x",\n    "created_at" : "2020-01-01T00:00:00+00:00",\n}',
+])
+def test_stamping_survives_whatever_quoting_the_agent_used(tmp_path, manifest):
+    from avo.core.generate import stamp_created_at
+    p = tmp_path / "c.py"
+    p.write_text(manifest + "\ndef forecast(m, c): return 0.5\n")
+    ts = stamp_created_at(p)
+    assert ts and "2020" not in p.read_text()
+
+
+def test_stamping_reports_when_it_could_not_find_the_field(tmp_path):
+    """Silently succeeding on a file with no created_at would hide the failure
+    the stamping exists to prevent."""
+    from avo.core.generate import stamp_created_at
+    p = tmp_path / "c.py"
+    p.write_text("MANIFEST = {'candidate_id': 'x'}\n")
+    assert stamp_created_at(p) == ""
