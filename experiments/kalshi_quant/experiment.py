@@ -275,8 +275,102 @@ class KalshiQuantExperiment:
             )
         return out
 
+    def validation_probe(self) -> str:
+        """Checks a generated candidate against the kalshi-quant contract.
+
+        Every check here corresponds to a way a generated candidate has to fail
+        before it can be scored, and each is cheap compared with discovering it
+        mid-run:
+
+          returns a float          - a str or None crashes skill_score
+          inside [0, 1]            - a probability outside the unit interval is
+                                     not a probability; an additive shift that
+                                     forgets to clip escapes at the boundaries,
+                                     which is why 0.001 and 0.999 are probed
+          deterministic            - a candidate using randomness cannot be
+                                     rescored or compared across generations
+          terminates               - enforced by the subprocess timeout around
+                                     this probe, not by the probe itself
+          deviates somewhere       - a candidate that always returns
+                                     implied_prob is baseline_market renamed:
+                                     it takes no position and scores exactly 0,
+                                     so accepting it wastes a generation slot
+
+        It does NOT check whether the candidate is any good. That is what the
+        scorer is for, and a plausible-looking candidate that scores badly is a
+        result, not a defect.
+        """
+        return """    from datetime import datetime, timedelta, timezone
+    _NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    class _M:
+        def __init__(self, bid, ask, last=None, volume=100.0, size=10.0):
+            self.ticker = "KXPROBE-1"
+            self.event_ticker = "KXPROBE"
+            self.series_ticker = "KXPROBE"
+            self.title = "probe"
+            self.observed_at = _NOW
+            self.close_time = _NOW + timedelta(hours=3)
+            self.yes_bid, self.yes_ask = bid, ask
+            self.last_price = last
+            self.volume = volume
+            self.open_interest = volume
+            self.yes_bid_size = self.yes_ask_size = size
+            self.liquidity = 1.0
+            self.status = "active"
+            self.price_level_structure = "linear_cent"
+            self.is_mve = False
+        @property
+        def implied_prob(self):
+            return (self.yes_bid + self.yes_ask) / 2.0
+        @property
+        def spread(self):
+            return self.yes_ask - self.yes_bid
+        @property
+        def has_two_sided_book(self):
+            return 0.0 < self.yes_bid < self.yes_ask < 1.0
+
+    class _C:
+        def __init__(self):
+            self.now = _NOW
+            self.series_history = {}
+
+    _probes = [
+        _M(0.0005, 0.0015), _M(0.01, 0.03), _M(0.10, 0.14), _M(0.30, 0.34),
+        _M(0.48, 0.52), _M(0.70, 0.74), _M(0.90, 0.94), _M(0.985, 0.995),
+        _M(0.20, 0.24, last=0.05), _M(0.20, 0.40, volume=0.0, size=1.0),
+    ]
+    _outs = []
+    for _m in _probes:
+        try:
+            _v = mod.forecast(_m, _C())
+        except BaseException as _e:
+            problems.append("forecast() raised at mid %.4f: %r" % (_m.implied_prob, _e))
+            break
+        if isinstance(_v, bool) or not isinstance(_v, (int, float)):
+            problems.append("forecast() returned %s, not a float" % type(_v).__name__)
+            break
+        _v = float(_v)
+        if _v != _v:
+            problems.append("forecast() returned NaN at mid %.4f" % _m.implied_prob)
+            break
+        if not (0.0 <= _v <= 1.0):
+            problems.append("forecast() returned %.4f at mid %.4f, outside [0,1]"
+                            % (_v, _m.implied_prob))
+            break
+        _outs.append(_v)
+
+    if not problems:
+        _again = [float(mod.forecast(_m, _C())) for _m in _probes]
+        if _again != _outs:
+            problems.append("forecast() is not deterministic across identical calls")
+        elif all(abs(a - m.implied_prob) < 1e-12 for a, m in zip(_outs, _probes)):
+            problems.append("forecast() never deviates from implied_prob "
+                            "(equivalent to baseline_market; takes no position)")
+"""
+
     def variation_prompt(self, parent: Candidate, siblings: Sequence[Score]) -> str:
-        raise NotImplementedError("Phase 4.")
+        raise NotImplementedError("Phase 4 -- needs generation 1 scores.")
 
 
 def build() -> KalshiQuantExperiment:
