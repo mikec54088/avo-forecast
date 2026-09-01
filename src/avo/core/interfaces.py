@@ -30,6 +30,21 @@ class Experiment(Protocol):
         """Controls / starting points. Never empty — the agent needs valid state."""
         ...
 
+    def validation_probe(self) -> str:
+        """Python source that checks a generated candidate against this
+        experiment's contract.
+
+        Runs in a subprocess (see core.validate) with the candidate loaded as
+        `mod`. Appends failure descriptions to `problems`; appending nothing
+        means the candidate is accepted. Indented to sit inside an `if` block,
+        so every line needs four leading spaces.
+
+        Domain-specific by necessity -- only the experiment knows what a valid
+        forecast is -- which is why it is a protocol method rather than a
+        special case inside core (INVARIANT #3).
+        """
+        ...
+
     def variation_prompt(self, parent: Candidate, siblings: Sequence[Score]) -> str:
         """Build the prompt that asks the backend for one new candidate."""
         ...
@@ -44,7 +59,7 @@ class Backend(Protocol):
 
     name: str
 
-    def run(self, prompt: str, workdir: str, timeout_s: int) -> "BackendResult": ...
+    def run(self, prompt: str, workdir: str, timeout_s: int) -> BackendResult: ...
 
 
 class BackendResult(Protocol):
