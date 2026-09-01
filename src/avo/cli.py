@@ -64,7 +64,10 @@ Requirements: it must be deterministic, must not use the network, and must \
 actually differ from market.implied_prob on at least some markets. Give it a \
 short docstring saying what edge it is trying to capture and why.
 
-Do not modify any other file."""
+Do not modify, create, or delete ANY file outside \
+experiments/kalshi_quant/candidates/. That includes memory files, notes, \
+configuration, and the scorer. Changes outside that directory are reverted \
+automatically and count against the run."""
 
 
 def _generate(args) -> None:
@@ -86,9 +89,12 @@ def _generate(args) -> None:
     print(f"backend {backend.name}\nexperiment {args.experiment}\n"
           f"{args.n} invocation(s), {args.timeout}s timeout each\n")
 
+    # The user's memory directory is outside the repo, so git cannot restore
+    # it; the 2026-09-01 trials wrote there. Watch and report it.
+    watch = [Path.home() / ".claude" / "projects", Path.home() / ".claude" / "CLAUDE.md"]
     attempts = run_trial(backend, exp, prompt, cdir, repo_root, n=args.n,
                          timeout_s=args.timeout, out_dir=repo_root / args.out_dir,
-                         keep=args.keep_rejects)
+                         keep=args.keep_rejects, watch_paths=watch)
     print("\n" + summarise(attempts))
 
 

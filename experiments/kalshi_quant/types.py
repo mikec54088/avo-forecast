@@ -13,6 +13,8 @@ the full `status=open` universe (961,804 markets). Findings that drove this file
   under any scaling and must be float.
 - Sizes and volumes are fractional (`"772.09"` contracts), so those are float too.
 - `series_ticker` is not returned at all. It is derived from the event ticker.
+- `liquidity_dollars` is present but is 0.0 on every market ever observed. See
+  the note on the field below before writing anything that depends on it.
 """
 from __future__ import annotations
 
@@ -36,6 +38,13 @@ class MarketSnapshot:
     open_interest: float
     yes_bid_size: float | None = None
     yes_ask_size: float | None = None
+    # ALWAYS 0.0. The API returns liquidity_dollars on every market and it is
+    # zero on every one of them: 610,077 rows across 40 snapshot files on
+    # 2026-09-01, not a single non-zero value, while open_interest is populated
+    # on ~57% of the same rows. Parsed and stored anyway in case Kalshi starts
+    # filling it in, but a candidate that gates on liquidity silently becomes a
+    # constant -- it will pass validation, score exactly 0, and look like a
+    # failed idea rather than a dead field. Use volume or open_interest.
     liquidity: float = 0.0
     status: str = ""
     price_level_structure: str = ""

@@ -106,3 +106,21 @@ def test_missing_price_field_raises_rather_than_defaulting(raw_markets):
 def test_observed_at_is_honoured(raw_markets):
     stamp = datetime(2026, 8, 23, 12, 0, tzinfo=timezone.utc)
     assert parse_market(raw_markets[0], observed_at=stamp).observed_at == stamp
+
+
+def test_liquidity_is_documented_as_always_zero(raw_markets):
+    """Kalshi returns liquidity_dollars on every market and it is 0.0 on every
+    one -- 610,077 rows across 40 snapshot files on 2026-09-01, none non-zero.
+    A candidate gating on it silently becomes a constant: it passes validation,
+    scores exactly 0, and reads as a failed idea rather than a dead field.
+
+    If this ever fails, Kalshi started populating the field and the warnings in
+    types.py should come out."""
+    from experiments.kalshi_quant import types
+
+    src = Path(types.__file__).read_text()
+    assert "ALWAYS 0.0" in src, "the always-zero warning was removed from types.py"
+    for raw in raw_markets:
+        assert float(raw["liquidity_dollars"]) == 0.0, (
+            "liquidity is now populated; update types.py and this test"
+        )

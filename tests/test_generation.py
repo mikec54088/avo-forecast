@@ -271,3 +271,86 @@ def test_summary_separates_timeouts_from_validation_failures():
     assert "1 timed out" in s and "1 failed validation" in s
     assert "no forecast() function" in s
     assert "timed out" not in s.split("validation failures:")[1]
+
+
+# ---------------------------------------------------------------- scope
+
+def test_out_of_scope_repo_writes_are_reverted(tmp_path):
+    """A generation agent has the same tool access a person does. The
+    2026-09-01 trials left edits outside the candidates directory; a candidate
+    generator that quietly edits the scorer would invalidate its own run."""
+    import subprocess
+
+    from avo.core.generate import git_dirty, revert_out_of_scope
+
+    repo = tmp_path / "repo"
+    (repo / "candidates").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    tracked = repo / "scorer.py"
+    tracked.write_text("original\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "init"], cwd=repo, check=True)
+
+    before = git_dirty(repo)
+    tracked.write_text("agent meddled\n")          # tracked, was clean
+    (repo / "stray_note.md").write_text("junk\n")  # untracked, agent-created
+    (repo / "candidates" / "ok.py").write_text("x = 1\n")  # in scope
+
+    reverted = revert_out_of_scope(repo, repo / "candidates", before)
+    assert set(reverted) == {"scorer.py", "stray_note.md"}
+    assert tracked.read_text() == "original\n", "tracked file not restored"
+    assert not (repo / "stray_note.md").exists(), "stray file not removed"
+    assert (repo / "candidates" / "ok.py").exists(), "in-scope file was destroyed"
+
+
+def test_work_already_in_progress_is_never_destroyed(tmp_path):
+    """Only paths clean BEFORE the invocation may be reverted. Wiping a user's
+    uncommitted work would be far worse than the stray write."""
+    import subprocess
+
+    from avo.core.generate import git_dirty, revert_out_of_scope
+
+    repo = tmp_path / "repo"
+    (repo / "candidates").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    wip = repo / "wip.py"
+    wip.write_text("committed\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "init"], cwd=repo, check=True)
+
+    wip.write_text("my uncommitted work\n")   # dirty BEFORE the agent runs
+    before = git_dirty(repo)
+    wip.write_text("my work plus agent edit\n")
+
+    assert revert_out_of_scope(repo, repo / "candidates", before) == []
+    assert wip.read_text() == "my work plus agent edit\n"
+
+
+def test_writes_outside_the_repo_are_reported_not_reverted(tmp_path):
+    """The user's memory directory is outside git's reach. Silently rewriting
+    a user's own files would be a worse failure than the stray write."""
+    import time
+
+    from avo.core.generate import external_writes
+
+    watched = tmp_path / "memory"
+    watched.mkdir()
+    (watched / "old.md").write_text("before\n")
+    time.sleep(0.02)
+    cutoff = time.time()
+    time.sleep(0.02)
+    (watched / "new.md").write_text("written during the run\n")
+
+    found = external_writes([watched], cutoff)
+    assert found == [str(watched / "new.md")]
+    assert (watched / "new.md").exists(), "external file must NOT be removed"
+
+
+def test_summary_reports_out_of_scope_writes():
+    from avo.core.generate import Attempt
+    att = [Attempt("1", "f", True, "accepted", 1.0, reverted=("scorer.py",),
+                   external=("~/.claude/x.md",))]
+    s = summarise(att)
+    assert "out-of-scope writes" in s and "1 reverted" in s

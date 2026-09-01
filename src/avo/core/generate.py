@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import subprocess
+import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
@@ -53,6 +55,93 @@ def stamp_created_at(path: str | Path, when: datetime | None = None) -> str:
     return iso
 
 
+def git_dirty(repo_root: str | Path) -> set[str]:
+    """Repo-relative paths git currently reports as changed or untracked."""
+    try:
+        cp = subprocess.run(["git", "status", "--porcelain", "-z"],
+                            cwd=str(repo_root), capture_output=True, text=True,
+                            timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    out = set()
+    for chunk in cp.stdout.split("\0"):
+        if len(chunk) > 3:
+            out.add(chunk[3:])
+    return out
+
+
+def revert_out_of_scope(
+    repo_root: str | Path, candidates_dir: str | Path, before: set[str]
+) -> list[str]:
+    """Undo repo changes the agent made outside the candidates directory.
+
+    A generation agent is a full coding-agent session with the same tool access
+    a person has. The 2026-09-01 trials showed it: twenty invocations left edits
+    in the user's memory directory as well as the candidates they were asked
+    for. Harmless there, but Phase 5 runs this at volume, and a candidate
+    generator that quietly edits the scorer would invalidate the very run it is
+    part of.
+
+    Only paths that were CLEAN before the invocation are touched, so
+    uncommitted work in progress is never destroyed -- a path already dirty is
+    reported and left alone. Tracked files are restored with git checkout;
+    untracked ones the agent created are deleted.
+
+    Returns what was reverted, for the record.
+    """
+    repo_root = Path(repo_root)
+    try:
+        rel_scope = str(Path(candidates_dir).resolve().relative_to(repo_root.resolve()))
+    except ValueError:
+        # candidates_dir outside the repo (tests, or a relocated experiment):
+        # nothing in the repo is in scope, so every repo change is stray.
+        rel_scope = "\0"
+    after = git_dirty(repo_root)
+    stray = sorted(
+        p for p in after - before
+        if not p.startswith(rel_scope) and not p.startswith("runs/")
+    )
+    if not stray:
+        return []
+
+    tracked, untracked = [], []
+    for rel in stray:
+        cp = subprocess.run(["git", "ls-files", "--error-unmatch", rel],
+                            cwd=str(repo_root), capture_output=True,
+                            text=True, timeout=30, check=False)
+        (tracked if cp.returncode == 0 else untracked).append(rel)
+
+    if tracked:
+        subprocess.run(["git", "checkout", "--", *tracked], cwd=str(repo_root),
+                       capture_output=True, timeout=60, check=False)
+    for rel in untracked:
+        target = repo_root / rel
+        if target.is_file():
+            target.unlink(missing_ok=True)
+    return stray
+
+
+def external_writes(paths: Sequence[str | Path], since: float) -> list[str]:
+    """Files under `paths` modified after `since`. Reported, never reverted.
+
+    These live outside the repo -- the user's memory directory above all -- so
+    git cannot restore them and this must not guess. Silently rewriting a
+    user's own files would be a worse failure than the stray write itself.
+    """
+    out = []
+    for root in paths:
+        root = Path(root)
+        if not root.exists():
+            continue
+        for f in ([root] if root.is_file() else root.rglob("*")):
+            try:
+                if f.is_file() and f.stat().st_mtime > since:
+                    out.append(str(f))
+            except OSError:
+                continue
+    return sorted(out)
+
+
 @dataclass(frozen=True)
 class Attempt:
     """One invocation, whatever happened."""
@@ -66,6 +155,8 @@ class Attempt:
     validations: Sequence[dict] = field(default_factory=tuple)
     kept_path: str = ""
     created_at: str = ""
+    reverted: Sequence[str] = field(default_factory=tuple)
+    external: Sequence[str] = field(default_factory=tuple)
 
 
 def generate_once(
@@ -76,6 +167,7 @@ def generate_once(
     repo_root: str | Path,
     timeout_s: int = 600,
     keep: bool = False,
+    watch_paths: Sequence[str | Path] | None = None,
 ) -> Attempt:
     """Invoke the backend once and validate whatever candidate it wrote.
 
@@ -89,8 +181,21 @@ def generate_once(
     candidates_dir = Path(candidates_dir)
     attempt_id = uuid.uuid4().hex[:8]
     before = {p.name for p in candidates_dir.glob("*.py")}
+    dirty_before = git_dirty(repo_root)
+    started_at = time.time()
 
     result = backend.run(prompt, str(repo_root), timeout_s)
+
+    # Enforced, not requested: the agent may write anywhere it likes, and this
+    # puts back everything outside the candidates directory.
+    reverted = tuple(revert_out_of_scope(repo_root, candidates_dir, dirty_before))
+    external = tuple(external_writes(watch_paths or (), started_at))
+    if reverted:
+        print(f"      reverted {len(reverted)} out-of-scope change(s): "
+              f"{', '.join(reverted[:4])}", flush=True)
+    if external:
+        print(f"      NOTE {len(external)} file(s) written outside the repo "
+              f"(not reverted): {', '.join(external[:3])}", flush=True)
 
     if result.timed_out:
         reason = f"backend timed out after {timeout_s}s"
@@ -112,12 +217,12 @@ def generate_once(
 
     if reason and not fresh:
         return Attempt(attempt_id, backend.name, False, reason, result.elapsed_s,
-                       tuple(result.files_written))
+                       tuple(result.files_written), reverted=reverted, external=external)
 
     if not fresh:
         return Attempt(attempt_id, backend.name, False,
                        "no candidate file was written", result.elapsed_s,
-                       tuple(result.files_written))
+                       tuple(result.files_written), reverted=reverted, external=external)
 
     probe = experiment.validation_probe()
     validations: list[Validation] = [
@@ -134,7 +239,8 @@ def generate_once(
         stamped = stamp_created_at(good[0].path)
         return Attempt(attempt_id, backend.name, True, "accepted", result.elapsed_s,
                        tuple(result.files_written),
-                       tuple(asdict(v) for v in validations), good[0].path, stamped)
+                       tuple(asdict(v) for v in validations), good[0].path, stamped,
+                       reverted, external)
 
     if not keep:
         for v in validations:
@@ -143,7 +249,7 @@ def generate_once(
         attempt_id, backend.name, False,
         "; ".join(p for v in validations for p in v.problems) or "rejected",
         result.elapsed_s, tuple(result.files_written),
-        tuple(asdict(v) for v in validations),
+        tuple(asdict(v) for v in validations), reverted=reverted, external=external,
     )
 
 
@@ -157,6 +263,7 @@ def run_trial(
     timeout_s: int = 600,
     out_dir: str | Path | None = None,
     keep: bool = False,
+    watch_paths: Sequence[str | Path] | None = None,
 ) -> list[Attempt]:
     """Invoke `n` times and report the accept rate.
 
@@ -172,12 +279,13 @@ def run_trial(
 
     for i in range(n):
         a = generate_once(backend, experiment, prompt, candidates_dir,
-                          repo_root, timeout_s, keep=keep)
+                          repo_root, timeout_s, keep=keep, watch_paths=watch_paths)
         if a.accepted and stash and a.kept_path:
             dest = stash / Path(a.kept_path).name
             shutil.move(a.kept_path, dest)
             a = Attempt(a.attempt_id, a.backend, a.accepted, a.reason, a.elapsed_s,
-                        a.files_written, a.validations, str(dest))
+                        a.files_written, a.validations, str(dest), a.created_at,
+                        a.reverted, a.external)
         attempts.append(a)
         print(f"  [{i + 1}/{n}] {'ACCEPT' if a.accepted else 'REJECT'} "
               f"{a.elapsed_s:5.0f}s  {a.reason[:90]}", flush=True)
@@ -213,6 +321,12 @@ def summarise(attempts: Sequence[Attempt]) -> str:
         f"  {len(invalid):>3} failed validation",
         f"mean wall clock {mean_s:.0f}s   slowest accepted {slowest_ok:.0f}s",
     ]
+    n_rev = sum(len(a.reverted) for a in attempts)
+    n_ext = sum(len(a.external) for a in attempts)
+    if n_rev or n_ext:
+        lines.append(f"out-of-scope writes: {n_rev} reverted in-repo, "
+                     f"{n_ext} outside the repo (reported only)")
+
     if invalid:
         fails: dict[str, int] = {}
         for a in invalid:
