@@ -278,121 +278,98 @@ class KalshiQuantExperiment:
     def validation_probe(self) -> str:
         """Checks a generated candidate against the kalshi-quant contract.
 
-        Every check here corresponds to a way a generated candidate has to fail
-        before it can be scored, and each is cheap compared with discovering it
-        mid-run:
+        Runs the candidate over ~200 REAL markets sampled from captured
+        snapshots (tests/fixtures/probe_markets.json, built by
+        scripts/build_probe_fixture.py), not synthetic ones.
+
+        That distinction is the whole point. Synthetic probes sweep one field
+        at a time from a fixed base, so field COMBINATIONS never occur, and a
+        candidate whose gate needs two conditions together is rejected for
+        "never deviating" when it was simply never triggered. On 2026-09-01
+        that rejected four legitimate generated candidates and three committed
+        hand-written ones. Worse than the waste: the bias is not random. It
+        rejects narrow, conditional strategies and passes blunt always-act
+        ones -- a selection pressure toward crude candidates, baked into the
+        harness. Real markets carry realistic combinations for free.
+
+        The candidate is also run against the real MarketSnapshot dataclass
+        rather than a stub, so a probe that drifts from the type it imitates
+        cannot pass something the scorer would reject.
+
+        Each check corresponds to a way a candidate has to fail before it can
+        be scored:
 
           returns a float          - a str or None crashes skill_score
-          inside [0, 1]            - a probability outside the unit interval is
-                                     not a probability; an additive shift that
-                                     forgets to clip escapes at the boundaries,
-                                     which is why 0.001 and 0.999 are probed
+          inside [0, 1]            - the fixture spans 0.0010 to 0.9990, so an
+                                     additive shift that forgets to clip is
+                                     caught at the boundary rather than in a run
           deterministic            - a candidate using randomness cannot be
                                      rescored or compared across generations
           terminates               - enforced by the subprocess timeout around
                                      this probe, not by the probe itself
           deviates somewhere       - a candidate that always returns
                                      implied_prob is baseline_market renamed:
-                                     it takes no position and scores exactly 0,
-                                     so accepting it wastes a generation slot
+                                     it takes no position and scores exactly 0
 
         It does NOT check whether the candidate is any good. That is what the
-        scorer is for, and a plausible-looking candidate that scores badly is a
-        result, not a defect.
+        scorer is for, and a plausible candidate that scores badly is a result,
+        not a defect.
         """
-        return """    from datetime import datetime, timedelta, timezone
-    _NOW = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        return """    import json
+    from datetime import datetime
+    from pathlib import Path
+    from experiments.kalshi_quant.types import (
+        ForecastContext, MarketSnapshot, Resolution,
+    )
 
-    class _R:
-        def __init__(self, i, outcome):
-            self.ticker = "KXPROBE-H%d" % i
-            self.resolved_at = _NOW - timedelta(hours=i + 1)
-            self.outcome = outcome
+    _fx = json.loads(Path("tests/fixtures/probe_markets.json").read_text())
+    _hist = {
+        s: [Resolution(r["ticker"], datetime.fromisoformat(r["resolved_at"]),
+                       r["outcome"])
+            for r in rows]
+        for s, rows in _fx["history"].items()
+    }
 
-    _HIST = [_R(i, i % 3 != 0) for i in range(40)]
+    _probes = []
+    for _row in _fx["markets"]:
+        _m = MarketSnapshot(
+            ticker=_row["ticker"], event_ticker=_row["event_ticker"],
+            series_ticker=_row["series_ticker"], title=_row["title"],
+            observed_at=datetime.fromisoformat(_row["observed_at"]),
+            close_time=datetime.fromisoformat(_row["close_time"]),
+            yes_bid=_row["yes_bid"], yes_ask=_row["yes_ask"],
+            last_price=_row["last_price"], volume=_row["volume"],
+            open_interest=_row["open_interest"],
+            yes_bid_size=_row["yes_bid_size"], yes_ask_size=_row["yes_ask_size"],
+            liquidity=_row["liquidity"], status=_row["status"],
+            price_level_structure=_row["price_level_structure"],
+            is_mve=_row["is_mve"],
+        )
+        _s = _row["series_ticker"]
+        _ctx = ForecastContext(
+            now=_m.observed_at,
+            series_history={_s: _hist[_s]} if _s in _hist else {},
+        )
+        _probes.append((_m, _ctx))
 
-    class _M:
-        def __init__(self, bid, ask, last=None, volume=100.0,
-                     bid_size=10.0, ask_size=10.0, close_h=3.0, oi=None):
-            self.ticker = "KXPROBE-1"
-            self.event_ticker = "KXPROBE"
-            self.series_ticker = "KXPROBE"
-            self.title = "probe"
-            self.observed_at = _NOW
-            self.close_time = _NOW + timedelta(hours=close_h)
-            self.yes_bid, self.yes_ask = bid, ask
-            self.last_price = last
-            self.volume = volume
-            self.open_interest = volume if oi is None else oi
-            self.yes_bid_size, self.yes_ask_size = bid_size, ask_size
-            self.liquidity = 1.0
-            self.status = "active"
-            self.price_level_structure = "linear_cent"
-            self.is_mve = False
-        @property
-        def implied_prob(self):
-            return (self.yes_bid + self.yes_ask) / 2.0
-        @property
-        def spread(self):
-            return self.yes_ask - self.yes_bid
-        @property
-        def has_two_sided_book(self):
-            return 0.0 < self.yes_bid < self.yes_ask < 1.0
-
-    class _C:
-        def __init__(self, history=None):
-            self.now = _NOW
-            self.series_history = history or {}
-
-    _EMPTY, _FULL = _C(), _C({"KXPROBE": _HIST})
-
-    # Every field a candidate might key on has to VARY across this set, or a
-    # candidate reading it looks like it never deviates. Four legitimate
-    # candidates were falsely rejected on 2026-09-01 by a probe that swept
-    # price and held book depth, history, close time and volume constant.
-    _probes = [
-        # price, including the boundaries where an unclipped shift escapes
-        (_M(0.0005, 0.0015), _EMPTY), (_M(0.01, 0.03), _EMPTY),
-        (_M(0.10, 0.14), _EMPTY),     (_M(0.30, 0.34), _EMPTY),
-        (_M(0.48, 0.52), _EMPTY),     (_M(0.70, 0.74), _EMPTY),
-        (_M(0.90, 0.94), _EMPTY),     (_M(0.985, 0.995), _EMPTY),
-        # spread: tight and wide
-        (_M(0.45, 0.46), _EMPTY), (_M(0.30, 0.60), _EMPTY),
-        # book depth, both directions -- microprice and depth-weighted mids
-        (_M(0.40, 0.44, bid_size=900.0, ask_size=5.0), _EMPTY),
-        (_M(0.40, 0.44, bid_size=5.0, ask_size=900.0), _EMPTY),
-        # last trade: absent, inside the book, and outside it both ways
-        (_M(0.40, 0.44, last=None), _EMPTY),
-        (_M(0.40, 0.44, last=0.42), _EMPTY),
-        (_M(0.40, 0.44, last=0.05), _EMPTY),
-        (_M(0.40, 0.44, last=0.95), _EMPTY),
-        # time to close: minutes, hours, days
-        (_M(0.40, 0.44, close_h=0.25), _EMPTY),
-        (_M(0.40, 0.44, close_h=72.0), _EMPTY),
-        (_M(0.40, 0.44, close_h=720.0), _EMPTY),
-        # volume and open interest, including a market nobody has traded
-        (_M(0.40, 0.44, volume=0.0, oi=0.0), _EMPTY),
-        (_M(0.40, 0.44, volume=5_000_000.0), _EMPTY),
-        # series history present -- memory-based candidates read this
-        (_M(0.40, 0.44), _FULL), (_M(0.20, 0.24), _FULL), (_M(0.80, 0.84), _FULL),
-    ]
     _outs = []
     for _m, _c in _probes:
         try:
             _v = mod.forecast(_m, _c)
         except BaseException as _e:
-            problems.append("forecast() raised at mid %.4f: %r" % (_m.implied_prob, _e))
+            problems.append("forecast() raised on %s (mid %.4f): %r"
+                            % (_m.ticker, _m.implied_prob, _e))
             break
         if isinstance(_v, bool) or not isinstance(_v, (int, float)):
             problems.append("forecast() returned %s, not a float" % type(_v).__name__)
             break
         _v = float(_v)
         if _v != _v:
-            problems.append("forecast() returned NaN at mid %.4f" % _m.implied_prob)
+            problems.append("forecast() returned NaN on %s" % _m.ticker)
             break
         if not (0.0 <= _v <= 1.0):
-            problems.append("forecast() returned %.4f at mid %.4f, outside [0,1]"
-                            % (_v, _m.implied_prob))
+            problems.append("forecast() returned %.4f on %s (mid %.4f), outside [0,1]"
+                            % (_v, _m.ticker, _m.implied_prob))
             break
         _outs.append(_v)
 
@@ -400,9 +377,16 @@ class KalshiQuantExperiment:
         _again = [float(mod.forecast(_m, _c)) for _m, _c in _probes]
         if _again != _outs:
             problems.append("forecast() is not deterministic across identical calls")
-        elif all(abs(a - m.implied_prob) < 1e-12 for a, (m, _) in zip(_outs, _probes)):
-            problems.append("forecast() never deviates from implied_prob "
-                            "(equivalent to baseline_market; takes no position)")
+        else:
+            _moved = sum(1 for a, (m, _) in zip(_outs, _probes)
+                         if abs(a - m.implied_prob) > 1e-12)
+            if _moved == 0:
+                problems.append("forecast() never deviates from implied_prob across "
+                                "%d real markets (equivalent to baseline_market; "
+                                "takes no position)" % len(_probes))
+            else:
+                info["deviates_on"] = _moved
+                info["probe_markets"] = len(_probes)
 """
 
     def variation_prompt(self, parent: Candidate, siblings: Sequence[Score]) -> str:

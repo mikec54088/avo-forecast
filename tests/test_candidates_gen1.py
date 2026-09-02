@@ -13,36 +13,51 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from avo.core import registry
+from experiments.kalshi_quant.types import MarketSnapshot, Resolution
 
-GEN1 = [
+HAND_WRITTEN = [
     "favourite_longshot", "longshot_fade", "favourite_boost", "last_trade_blend",
     "tight_book_only", "volume_weighted", "series_base_rate_blend",
     "book_imbalance_tilt", "early_settle_aware", "ensemble_shoulders",
     "control_cost_of_trading", "control_middle_only",
 ]
+
+# Promoted from the 2026-09-01 generation trials: one representative per
+# distinct idea, out of 25 validated candidates that collapsed to ~7 ideas.
+# They are generation 1, not 2 -- three claimed generation 2 because the agent
+# saw itself as a descendant of favourite_longshot, but generation 2 means
+# seeded by generation 1's SCORES, and no scores existed. parent_id is kept
+# where the agent set it; that lineage is real even though the round is not.
+GENERATED = [
+    "logit_midpoint", "tick_grid_conditioned", "open_interest_shoulders",
+    "microprice_fair_value", "spread_scaled_shoulder", "longshot_time_decay",
+    "last_trade_outside_book", "last_trade_fade",
+]
+
+GEN1 = HAND_WRITTEN + GENERATED
 NOW = datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc)
 
 
-class M:
-    """A market a candidate may look at."""
+def M(bid=0.20, ask=0.24, *, last=None, volume=500.0, bid_size=10.0,
+      ask_size=10.0, hours_to_close=2.0, ticker="KXT-1", open_interest=None,
+      structure="linear_cent"):
+    """A real MarketSnapshot, not a stub.
 
-    def __init__(self, bid=0.20, ask=0.24, *, last=None, volume=500.0,
-                 bid_size=10.0, ask_size=10.0, hours_to_close=2.0, ticker="KXT-1"):
-        self.ticker = ticker
-        self.series_ticker = "KXT"
-        self.yes_bid, self.yes_ask = bid, ask
-        self.last_price = last
-        self.volume = volume
-        self.yes_bid_size, self.yes_ask_size = bid_size, ask_size
-        self.close_time = NOW + timedelta(hours=hours_to_close)
-
-    @property
-    def implied_prob(self):
-        return (self.yes_bid + self.yes_ask) / 2.0
-
-    @property
-    def spread(self):
-        return self.yes_ask - self.yes_bid
+    A hand-rolled stub drifts from the dataclass it imitates: this file used
+    one until 2026-09-02, and it lacked has_two_sided_book and open_interest,
+    so promoted candidates reading those fields failed here while working
+    perfectly against real data. The validation probe had the identical defect
+    and was fixed the same way. Build the real type and the class of bug is
+    gone.
+    """
+    return MarketSnapshot(
+        ticker=ticker, event_ticker="KXT-EV", series_ticker="KXT", title="probe",
+        observed_at=NOW, close_time=NOW + timedelta(hours=hours_to_close),
+        yes_bid=bid, yes_ask=ask, last_price=last, volume=volume,
+        open_interest=volume if open_interest is None else open_interest,
+        yes_bid_size=bid_size, yes_ask_size=ask_size, liquidity=0.0,
+        status="active", price_level_structure=structure, is_mve=False,
+    )
 
 
 class Ctx:
@@ -87,7 +102,7 @@ def test_actually_deviates_from_the_market_somewhere(name):
     """A candidate that always returns implied_prob is baseline_market wearing
     a different name -- it would take no position and score exactly 0."""
     f = _mod(name).forecast
-    hist = [type("R", (), {"outcome": 1, "ticker": "x"})() for _ in range(80)]
+    hist = [Resolution(f"x{i}", NOW - timedelta(hours=i + 1), 1) for i in range(80)]
     probes = [
         (M(bid=0.02, ask=0.04), Ctx()),
         (M(bid=0.20, ask=0.24), Ctx()),
@@ -102,6 +117,27 @@ def test_actually_deviates_from_the_market_somewhere(name):
     assert any(abs(f(m, c) - m.implied_prob) > 1e-9 for m, c in probes), (
         f"{name} never deviates from the market price"
     )
+
+
+def test_last_trade_pair_predicts_opposite_directions():
+    """last_trade_outside_book and last_trade_fade were promoted together on
+    purpose: given the same outside print they disagree about which way to
+    lean. One says the quote is stale so follow the shoulder, the other says
+    the print is the older price so fade it. They cannot both be right, which
+    is worth more than either alone -- the same structure as the
+    longshot_fade / favourite_boost partition."""
+    a = _mod("last_trade_outside_book").forecast
+    b = _mod("last_trade_fade").forecast
+    disagreed = False
+    for bid, ask, last in [(0.20, 0.24, 0.05), (0.20, 0.24, 0.95),
+                           (0.70, 0.74, 0.55), (0.70, 0.74, 0.95),
+                           (0.10, 0.13, 0.02), (0.85, 0.89, 0.99)]:
+        m = M(bid=bid, ask=ask, last=last)
+        da = a(m, Ctx()) - m.implied_prob
+        db = b(m, Ctx()) - m.implied_prob
+        if da * db < 0:
+            disagreed = True
+    assert disagreed, "the pair never disagrees; it is not a falsification pair"
 
 
 def test_shoulder_family_leaves_the_calibrated_middle_alone():
@@ -160,5 +196,5 @@ def test_series_base_rate_blend_is_the_only_one_using_context():
     f = _mod("series_base_rate_blend").forecast
     m = M(bid=0.20, ask=0.24)
     empty = f(m, Ctx())
-    hist = [type("R", (), {"outcome": 1, "ticker": f"x{i}"})() for i in range(200)]
+    hist = [Resolution(f"x{i}", NOW - timedelta(hours=i + 1), 1) for i in range(200)]
     assert f(m, Ctx({"KXT": hist})) > empty, "history did not move the forecast"

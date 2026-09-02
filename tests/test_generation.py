@@ -354,3 +354,65 @@ def test_summary_reports_out_of_scope_writes():
                    external=("~/.claude/x.md",))]
     s = summarise(att)
     assert "out-of-scope writes" in s and "1 reverted" in s
+
+
+# ------------------------------------------------- real-market probe
+
+def test_probe_fixture_spans_the_field_space():
+    """The probe is only as good as the sample. If the fixture stops covering
+    the boundaries or the rare corners, narrow-gate candidates start being
+    falsely rejected again and nothing else would notice."""
+    import json
+    fx = json.loads((REPO / "tests" / "fixtures" / "probe_markets.json").read_text())
+    m = fx["markets"]
+    assert len(m) >= 100, "sample too small to hit field combinations"
+    assert min(r["yes_bid"] for r in m) < 0.01, "no near-zero prices"
+    assert max(r["yes_ask"] for r in m) > 0.99, "no near-one prices"
+    assert any(r["last_price"] is None for r in m), "no never-traded markets"
+    assert any(r["volume"] == 0 for r in m), "no zero-volume markets"
+    assert any(r["yes_ask"] - r["yes_bid"] > 0.08 for r in m), "no wide books"
+    assert any(r["yes_ask"] - r["yes_bid"] <= 0.02 for r in m), "no tight books"
+    assert fx["history"], "no series history; memory candidates cannot be probed"
+
+
+def test_probe_accepts_a_candidate_gated_on_two_conditions_at_once(tmp_path):
+    """The 2026-09-01 regression, pinned. `near_close_shoulders` needed a
+    shoulder price AND a near close together; the synthetic probe varied one
+    field at a time from a mid-price base, so that pair never occurred and the
+    candidate was rejected for 'never deviating'.
+
+    The bias was not random: it rejected narrow conditional strategies and
+    passed blunt always-act ones -- a selection pressure toward crude
+    candidates, built into the harness."""
+    p = tmp_path / "narrow.py"
+    p.write_text(
+        'MANIFEST = {"candidate_id": "narrow", "created_at": "2026-09-02T00:00:00+00:00"}\n'
+        "def forecast(market, context):\n"
+        "    p = market.implied_prob\n"
+        "    hours = (market.close_time - context.now).total_seconds() / 3600.0\n"
+        "    if hours > 1.0:\n"
+        "        return p\n"
+        "    if 0.65 < p <= 0.95:\n"
+        "        return min(p + 0.04, 0.999)\n"
+        "    return p\n"
+    )
+    v = validate_candidate_file(p, PROBE, REPO)
+    assert v.accepted, f"narrow-gate candidate falsely rejected again: {v.problems}"
+
+
+def test_probe_uses_the_real_market_type_not_a_stub():
+    """A stub that drifts from MarketSnapshot could pass something the scorer
+    would reject. The probe imports the real dataclass, so a candidate reading
+    a field that does not exist fails here rather than mid-run."""
+    p = REPO / "tests" / "fixtures" / "probe_stub_check.py"
+    p.write_text(
+        'MANIFEST = {"candidate_id": "stub", "created_at": "2026-09-02T00:00:00+00:00"}\n'
+        "def forecast(market, context):\n"
+        "    return market.this_field_does_not_exist\n"
+    )
+    try:
+        v = validate_candidate_file(p, PROBE, REPO)
+        assert not v.accepted
+        assert "raised" in v.problems[0] and "AttributeError" in v.problems[0]
+    finally:
+        p.unlink(missing_ok=True)
