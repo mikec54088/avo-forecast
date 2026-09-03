@@ -59,7 +59,12 @@ def data_root(tmp_path):
     """
     snaps = [
         _snap_row("m1", T0, 0.30, 0.40),                                  # 180 min stale
+        _snap_row("m1", T0 + timedelta(hours=2, minutes=40), 0.50, 0.60),  # history
         _snap_row("m1", T0 + timedelta(hours=2, minutes=50), 0.60, 0.70),  # 10 min stale
+        # same event as m1, quoted just before the entry -> a sibling
+        _snap_row("m1s", T0 + timedelta(hours=2, minutes=45), 0.25, 0.30),
+        # same event, quoted AFTER m1 resolved -> must never be a sibling
+        _snap_row("m1f", T0 + timedelta(hours=3, minutes=5), 0.01, 0.02),
         _snap_row("m2", T0 + timedelta(hours=3, minutes=30), 0.10, 0.20, series="KXOTHER"),
         _snap_row("m3", T0, 0.45, 0.55),
         _snap_row("m4", T0 + timedelta(hours=9), 0.50, 0.60),
@@ -306,3 +311,50 @@ def test_score_reports_both_intervals(data_root):
     s = exp.score(c, exp.load_candidate(c), entries=entries, history=SeriesHistory(entries))
     assert "skill_ci_iid_lo" in s.secondary and "skill_ci_iid_hi" in s.secondary
     assert "series-clustered" in s.notes
+
+
+# ------------------------------------------------- price history & siblings
+
+def test_price_history_is_strictly_before_the_entry(data_root):
+    """An observation at the entry instant IS the entry, not its history."""
+    m1 = next(e for e in load_entries(data_root) if e.ticker == "m1")
+    assert len(m1.price_history) == 2, "earlier quotes of the same market missing"
+    assert all(p.observed_at < m1.market.observed_at for p in m1.price_history)
+    assert [p.yes_bid for p in m1.price_history] == [0.30, 0.50], "not oldest-first"
+
+
+def test_price_history_lets_a_candidate_see_direction(data_root):
+    """The point of the field. m1 drifted 0.35 -> 0.55 -> 0.65; before this
+    existed a candidate saw only 0.65 and could not tell rising from falling."""
+    m1 = next(e for e in load_entries(data_root) if e.ticker == "m1")
+    path = [p.implied_prob for p in m1.price_history] + [m1.market.implied_prob]
+    assert path == sorted(path), "history does not reconstruct the path"
+
+
+def test_siblings_never_include_a_quote_from_after_the_entry(data_root):
+    """m1f is in the same event but quoted after m1 resolved. In a mutually
+    exclusive event a post-resolution sibling quote IS the outcome -- when one
+    leg settles yes the others collapse to zero. The first version of this
+    window looked forward as well as back and let exactly one such quote
+    through out of 54,611."""
+    for e in load_entries(data_root):
+        assert all(s.observed_at <= e.market.observed_at for s in e.siblings)
+        assert all(s.observed_at < e.resolved_at for s in e.siblings)
+        assert all(s.ticker != e.ticker for s in e.siblings), "self listed as sibling"
+
+
+def test_siblings_are_found_within_the_page_tolerance(data_root):
+    """observed_at is stamped per PAGE of a sweep, so legs of one event can be
+    minutes apart despite coming from the same pass."""
+    m1 = next(e for e in load_entries(data_root) if e.ticker == "m1")
+    assert {s.ticker for s in m1.siblings} == {"m1s"}, "sibling not matched"
+
+
+def test_context_carries_the_new_fields(data_root):
+    entries = load_entries(data_root)
+    h = SeriesHistory(entries)
+    m1 = next(e for e in entries if e.ticker == "m1")
+    ctx = h.context_for(m1)
+    assert len(ctx.price_history) == 2
+    assert len(ctx.siblings) == 1
+    assert ctx.sibling_sum == pytest.approx(0.275)

@@ -13,7 +13,12 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from avo.core import registry
-from experiments.kalshi_quant.types import MarketSnapshot, Resolution
+from experiments.kalshi_quant.types import (
+    ForecastContext,
+    MarketSnapshot,
+    PricePoint,
+    Resolution,
+)
 
 HAND_WRITTEN = [
     "favourite_longshot", "longshot_fade", "favourite_boost", "last_trade_blend",
@@ -34,7 +39,11 @@ GENERATED = [
     "last_trade_outside_book", "last_trade_fade",
 ]
 
-GEN1 = HAND_WRITTEN + GENERATED
+# Generation 2: the first candidates that can see more than one snapshot.
+# ForecastContext gained price_history and siblings on 2026-09-02 (G1).
+GEN2 = ["price_momentum", "sibling_coherence"]
+
+GEN1 = HAND_WRITTEN + GENERATED + GEN2
 NOW = datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc)
 
 
@@ -60,10 +69,44 @@ def M(bid=0.20, ask=0.24, *, last=None, volume=500.0, bid_size=10.0,
     )
 
 
-class Ctx:
-    def __init__(self, history=None):
-        self.now = NOW
-        self.series_history = history or {}
+def Ctx(history=None, *, path=None, siblings=None):
+    """A real ForecastContext, not a stub.
+
+    Hand-rolled stubs drift from the dataclass they imitate. This file used one
+    for the market (fixed 2026-09-02, it lacked has_two_sided_book and
+    open_interest) and another for the context (fixed the same day, it lacked
+    price_history and siblings). Both times candidates that worked against real
+    data failed here. Build the real types and the class of bug is gone.
+    """
+    return ForecastContext(
+        now=NOW,
+        series_history=history or {},
+        price_history=list(path or []),
+        siblings=list(siblings or []),
+    )
+
+
+def _rising_path():
+    return [PricePoint(NOW - timedelta(minutes=15 * (6 - i)),
+                       0.20 + 0.06 * i, 0.24 + 0.06 * i, 100.0, 50.0)
+            for i in range(6)]
+
+
+def _falling_path():
+    return [PricePoint(NOW - timedelta(minutes=15 * (6 - i)),
+                       0.95 - 0.06 * i, 0.99 - 0.06 * i, 100.0, 50.0)
+            for i in range(6)]
+
+
+def _ctx_with_path():
+    """A rising price path -- what price_momentum reads."""
+    return Ctx(path=_rising_path())
+
+
+def _ctx_with_siblings():
+    """Event legs summing well above 1.0 -- what sibling_coherence reads."""
+    return Ctx(siblings=[M(bid=0.40, ask=0.44, ticker="KXT-2"),
+                         M(bid=0.30, ask=0.34, ticker="KXT-3")])
 
 
 def _mod(name):
@@ -74,7 +117,7 @@ def _mod(name):
 def test_registered_with_matching_manifest(name):
     seeds = {c.candidate_id: c for c in registry.load("kalshi_quant").seed_candidates()}
     assert name in seeds
-    assert seeds[name].generation == 1, "gen1 candidates must not claim generation 0"
+    assert seeds[name].generation >= 1, "must not claim generation 0"
     assert _mod(name).MANIFEST["candidate_id"] == name
 
 
@@ -113,6 +156,8 @@ def test_actually_deviates_from_the_market_somewhere(name):
         (M(bid=0.20, ask=0.24, bid_size=90.0, ask_size=1.0), Ctx()),
         (M(bid=0.20, ask=0.24, hours_to_close=72.0), Ctx()),
         (M(bid=0.20, ask=0.24), Ctx({"KXT": hist})),
+        (M(bid=0.60, ask=0.64), _ctx_with_path()),
+        (M(bid=0.30, ask=0.34), _ctx_with_siblings()),
     ]
     assert any(abs(f(m, c) - m.implied_prob) > 1e-9 for m, c in probes), (
         f"{name} never deviates from the market price"
@@ -198,3 +243,31 @@ def test_series_base_rate_blend_is_the_only_one_using_context():
     empty = f(m, Ctx())
     hist = [Resolution(f"x{i}", NOW - timedelta(hours=i + 1), 1) for i in range(200)]
     assert f(m, Ctx({"KXT": hist})) > empty, "history did not move the forecast"
+
+
+def test_price_momentum_reads_the_path_not_just_the_quote():
+    """The whole reason price_history was added. Identical current quote, two
+    different histories, must give two different forecasts -- and it must lean
+    with the drift, not against it."""
+    f = _mod("price_momentum").forecast
+    m = M(bid=0.60, ask=0.64)
+    rising, falling = Ctx(path=_rising_path()), Ctx(path=_falling_path())
+    assert f(m, rising) > m.implied_prob, "did not lean with an upward drift"
+    assert f(m, falling) < m.implied_prob, "did not lean with a downward drift"
+    assert f(m, Ctx()) == pytest.approx(m.implied_prob), "acted with no history"
+
+
+def test_sibling_coherence_reads_the_event_not_just_the_leg():
+    """Legs summing above 1.0 mean the event is collectively overpriced, so
+    this leg probably is too. Abstains below MIN_SIBLINGS, because a partial
+    set sums low for a boring reason."""
+    f = _mod("sibling_coherence").forecast
+    m = M(bid=0.30, ask=0.34)
+    over = Ctx(siblings=[M(bid=0.40, ask=0.44, ticker="a"),
+                         M(bid=0.30, ask=0.34, ticker="b")])
+    under = Ctx(siblings=[M(bid=0.20, ask=0.24, ticker="a"),
+                          M(bid=0.20, ask=0.24, ticker="b")])
+    assert f(m, over) < m.implied_prob, "did not fade an over-priced event"
+    assert f(m, under) > m.implied_prob, "did not lift an under-priced event"
+    one = Ctx(siblings=[M(bid=0.40, ask=0.44, ticker="a")])
+    assert f(m, one) == pytest.approx(m.implied_prob), "acted on a partial leg set"

@@ -32,6 +32,9 @@ def main() -> None:
     if not snaps:
         raise SystemExit("no snapshots on disk to sample from")
 
+    # A wider window for context than for sampling: the path and the siblings
+    # need earlier sweeps than the markets themselves are drawn from.
+    df_all = pd.concat([pd.read_parquet(f) for f in snaps[-40:]], ignore_index=True)
     df = pd.concat([pd.read_parquet(f) for f in snaps[-6:]], ignore_index=True)
     df = df.drop_duplicates("ticker")
     df["mid"] = (df.yes_bid + df.yes_ask) / 2.0
@@ -97,8 +100,50 @@ def main() -> None:
                 for t, ra, o in zip(g.ticker, g.resolved_at, g.outcome, strict=True)
             ]
 
+    # Price path and event siblings for each sampled market, sliced strictly
+    # before its observed_at. ForecastContext gained both on 2026-09-02, and a
+    # fixture without them rejects every candidate that reads them -- the same
+    # defect that rejected depth and calendar candidates a day earlier.
+    want_t = {r["ticker"] for r in rows}
+    want_e = {r["event_ticker"] for r in rows}
+    at_of = {r["ticker"]: pd.Timestamp(r["observed_at"]) for r in rows}
+
+    hp = df_all[df_all["ticker"].isin(want_t)].sort_values("observed_at")
+    price_history: dict[str, list] = {}
+    for t, g in hp.groupby("ticker"):
+        past = g[g["observed_at"] < at_of[t]].tail(24)
+        if len(past):
+            price_history[t] = [
+                {"observed_at": o.isoformat(), "yes_bid": float(b),
+                 "yes_ask": float(a), "volume": float(v), "open_interest": float(oi)}
+                for o, b, a, v, oi in zip(past.observed_at, past.yes_bid, past.yes_ask,
+                                          past.volume, past.open_interest, strict=True)
+            ]
+
+    sb = df_all[df_all["event_ticker"].isin(want_e)]
+    tol = pd.Timedelta(minutes=20)
+    siblings: dict[str, list] = {}
+    for r in rows:
+        at = at_of[r["ticker"]]
+        cand = sb[(sb["event_ticker"] == r["event_ticker"])
+                  & (sb["ticker"] != r["ticker"])
+                  & (sb["observed_at"] <= at) & (sb["observed_at"] >= at - tol)]
+        if not len(cand):
+            continue
+        near = cand.sort_values("observed_at").groupby("ticker").last().reset_index()
+        siblings[r["ticker"]] = [
+            {c: (x.isoformat() if isinstance(x, pd.Timestamp) else
+                 (None if pd.isna(x) else x))
+             for c, x in zip(cols, row, strict=True)}
+            for row in near[cols].itertuples(index=False)
+        ]
+
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps({"markets": rows, "history": history}, indent=1))
+    OUT.write_text(json.dumps(
+        {"markets": rows, "history": history,
+         "price_history": price_history, "siblings": siblings}, indent=1))
+    print(f"  price paths for {len(price_history)} markets, "
+          f"siblings for {len(siblings)}")
     print(f"{len(rows)} markets, {len(history)} series with history -> {OUT}")
     print(f"  price      {min(r['yes_bid'] for r in rows):.4f} .. "
           f"{max(r['yes_ask'] for r in rows):.4f}")

@@ -319,7 +319,7 @@ class KalshiQuantExperiment:
     from datetime import datetime
     from pathlib import Path
     from experiments.kalshi_quant.types import (
-        ForecastContext, MarketSnapshot, Resolution,
+        ForecastContext, MarketSnapshot, PricePoint, Resolution,
     )
 
     _fx = json.loads(Path("tests/fixtures/probe_markets.json").read_text())
@@ -330,9 +330,8 @@ class KalshiQuantExperiment:
         for s, rows in _fx["history"].items()
     }
 
-    _probes = []
-    for _row in _fx["markets"]:
-        _m = MarketSnapshot(
+    def _mk(_row):
+        return MarketSnapshot(
             ticker=_row["ticker"], event_ticker=_row["event_ticker"],
             series_ticker=_row["series_ticker"], title=_row["title"],
             observed_at=datetime.fromisoformat(_row["observed_at"]),
@@ -345,10 +344,21 @@ class KalshiQuantExperiment:
             price_level_structure=_row["price_level_structure"],
             is_mve=_row["is_mve"],
         )
-        _s = _row["series_ticker"]
+
+    _probes = []
+    for _row in _fx["markets"]:
+        _m = _mk(_row)
+        _s, _t = _row["series_ticker"], _row["ticker"]
         _ctx = ForecastContext(
             now=_m.observed_at,
             series_history={_s: _hist[_s]} if _s in _hist else {},
+            price_history=[
+                PricePoint(datetime.fromisoformat(_p["observed_at"]),
+                           _p["yes_bid"], _p["yes_ask"], _p["volume"],
+                           _p["open_interest"])
+                for _p in _fx.get("price_history", {}).get(_t, [])
+            ],
+            siblings=[_mk(_r) for _r in _fx.get("siblings", {}).get(_t, [])],
         )
         _probes.append((_m, _ctx))
 

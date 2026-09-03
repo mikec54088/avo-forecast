@@ -18,12 +18,17 @@ from __future__ import annotations
 import bisect
 import glob
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 
-from experiments.kalshi_quant.types import ForecastContext, MarketSnapshot, Resolution
+from experiments.kalshi_quant.types import (
+    ForecastContext,
+    MarketSnapshot,
+    PricePoint,
+    Resolution,
+)
 
 DATA_ROOT = Path(__file__).resolve().parents[2] / "data" / "kalshi_quant"
 
@@ -55,6 +60,10 @@ ENTRY_POLICY = "last_before_resolution_within_60min"
 MAX_ENTRY_STALENESS_MINUTES = 60.0
 
 
+MAX_PRICE_HISTORY = 24     # ~6h at the 15-minute near-pass cadence
+SIBLING_TOLERANCE_MIN = 20.0
+
+
 @dataclass(frozen=True)
 class Entry:
     """One scoreable observation: a snapshot, and what happened afterwards."""
@@ -62,6 +71,8 @@ class Entry:
     market: MarketSnapshot
     resolved_at: datetime
     outcome: int
+    price_history: tuple[PricePoint, ...] = ()
+    siblings: tuple[MarketSnapshot, ...] = ()
 
     @property
     def ticker(self) -> str:
@@ -125,8 +136,8 @@ def load_entries(data_root: Path | None = None) -> list[Entry]:
     if res.empty:
         return []
 
-    snap = pd.concat([pd.read_parquet(f) for f in snap_files], ignore_index=True)
-    snap = snap[snap["ticker"].isin(set(res["ticker"]))]
+    all_snap = pd.concat([pd.read_parquet(f) for f in snap_files], ignore_index=True)
+    snap = all_snap[all_snap["ticker"].isin(set(res["ticker"]))]
     if snap.empty:
         return []
 
@@ -147,7 +158,7 @@ def load_entries(data_root: Path | None = None) -> list[Entry]:
     if j.empty:
         return []
 
-    return [
+    entries = [
         Entry(
             market=_row_to_snapshot(r),
             resolved_at=r.resolved_at.to_pydatetime(),
@@ -155,6 +166,82 @@ def load_entries(data_root: Path | None = None) -> list[Entry]:
         )
         for r in j.itertuples(index=False)
     ]
+    # Siblings come from the UNFILTERED frame. `snap` holds only tickers that
+    # have resolved, and a sibling does not need to have resolved for its quote
+    # to be informative -- an unresolved leg of a mutually exclusive event is
+    # exactly the leg whose price says what the market thinks of ours.
+    return _attach_context(entries, snap, all_snap)
+
+
+def _attach_context(
+    entries: list[Entry], snap: pd.DataFrame, all_snap: pd.DataFrame
+) -> list[Entry]:
+    """Attach each entry's own price path and its event siblings.
+
+    Both are sliced as of the entry instant, and the window looks BACKWARD
+    only. Price history is strictly before it -- an observation at the same
+    instant is the entry itself, not history. Siblings are the nearest quote
+    per ticker at or before it, within SIBLING_TOLERANCE_MIN.
+
+    The tolerance exists because observed_at is stamped per PAGE of a sweep, so
+    two legs of one event can be minutes apart despite coming from the same
+    pass. An earlier version allowed the window to look forward too, for the
+    same reason -- and let one sibling through that was quoted AFTER its
+    market had resolved. In a mutually exclusive event that is the outcome
+    itself: when one leg settles yes, the others collapse to zero. One leak in
+    54,611 is still a leak, and this is the class of defect that does not
+    announce itself in a score, it just looks like a discovery. Backward-only
+    costs some same-sweep siblings and is worth it.
+
+    History is capped at MAX_PRICE_HISTORY points. A candidate reasoning about
+    momentum needs the recent path, not every quote since the market opened,
+    and uncapped history would make the memory cost of scoring scale with how
+    long capture has been running.
+    """
+    if not entries:
+        return entries
+    tickers = {e.ticker for e in entries}
+    events = {e.market.event_ticker for e in entries}
+
+    hist_src = snap[snap["ticker"].isin(tickers)][
+        ["ticker", "observed_at", "yes_bid", "yes_ask", "volume", "open_interest"]
+    ].sort_values("observed_at")
+    by_ticker: dict[str, list] = {}
+    for r in hist_src.itertuples(index=False):
+        by_ticker.setdefault(r.ticker, []).append(r)
+
+    sib_src = all_snap[all_snap["event_ticker"].isin(events)]
+    by_event: dict[str, list] = {}
+    for r in sib_src.itertuples(index=False):
+        by_event.setdefault(r.event_ticker, []).append(r)
+
+    tol = timedelta(minutes=SIBLING_TOLERANCE_MIN)
+    out: list[Entry] = []
+    for e in entries:
+        at = e.market.observed_at
+
+        past = [r for r in by_ticker.get(e.ticker, []) if r.observed_at < at]
+        history = tuple(
+            PricePoint(
+                observed_at=r.observed_at.to_pydatetime(),
+                yes_bid=float(r.yes_bid), yes_ask=float(r.yes_ask),
+                volume=float(r.volume), open_interest=float(r.open_interest),
+            )
+            for r in past[-MAX_PRICE_HISTORY:]
+        )
+
+        nearest: dict[str, object] = {}
+        for r in by_event.get(e.market.event_ticker, []):
+            # Backward-only: never a quote from after the entry instant.
+            if r.ticker == e.ticker or not (at - tol <= r.observed_at <= at):
+                continue
+            prev = nearest.get(r.ticker)
+            if prev is None or r.observed_at > prev.observed_at:
+                nearest[r.ticker] = r
+        siblings = tuple(_row_to_snapshot(r) for r in nearest.values())
+
+        out.append(Entry(e.market, e.resolved_at, e.outcome, history, siblings))
+    return out
 
 
 class SeriesHistory:
@@ -190,4 +277,6 @@ class SeriesHistory:
                     entry.market.series_ticker, entry.market.observed_at
                 )
             },
+            price_history=list(entry.price_history),
+            siblings=list(entry.siblings),
         )

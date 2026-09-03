@@ -94,13 +94,74 @@ class Resolution:
 
 
 @dataclass(frozen=True)
+class PricePoint:
+    """One earlier observation of the same market.
+
+    Deliberately thinner than MarketSnapshot: a candidate reasoning about the
+    path needs the quote and the turnover, not the title and the tick
+    structure, and a full snapshot per history point would multiply the memory
+    cost of scoring by the history depth for no gain.
+    """
+
+    observed_at: datetime
+    yes_bid: float
+    yes_ask: float
+    volume: float
+    open_interest: float
+
+    @property
+    def implied_prob(self) -> float:
+        return (self.yes_bid + self.yes_ask) / 2.0
+
+    @property
+    def spread(self) -> float:
+        return self.yes_ask - self.yes_bid
+
+
+@dataclass(frozen=True)
 class ForecastContext:
     """Everything a candidate may see besides the market itself.
 
     Deliberately NO research tool here. A research-enabled candidate is a
     different experiment (kalshi-research), not an extra field — it changes the
     cost model by orders of magnitude.
+
+    Every field is sliced as of `now`. Nothing here may contain information
+    that did not exist at the entry instant; that slicing is enforced in
+    observations.py and tested, because a leak would be invisible in the score
+    and would simply look like a discovery.
     """
 
     now: datetime
+
+    # Resolutions of OTHER markets in the same series, known before `now`.
     series_history: dict[str, list[Resolution]] = field(default_factory=dict)
+
+    # This market's own earlier quotes, oldest first, strictly before `now`.
+    #
+    # Added 2026-09-02 (G1). Generation 1 scored a clean null, and every one of
+    # its 24 candidates was arithmetic on a single photograph of the book: a
+    # candidate saw 0.42 with no way to know whether that had drifted down from
+    # 0.70 or up from 0.15. No momentum, no volatility, no trend. The snapshots
+    # were already on disk; they were simply never passed in. Before concluding
+    # the market is efficient, it is worth testing candidates that are not blind.
+    price_history: list[PricePoint] = field(default_factory=list)
+
+    # Other markets in the same EVENT, quoted at about the same instant.
+    #
+    # Added 2026-09-02 (G1). Kalshi events carry several legs, and mutually
+    # exclusive ones should price to about 1.0 in total. When they do not, that
+    # is a real signal sitting in data already captured. Note this is
+    # within-event structure, not cross-venue arbitrage, which INVARIANT #6
+    # rules out for being too easy to find and not the research question.
+    siblings: list[MarketSnapshot] = field(default_factory=list)
+
+    @property
+    def sibling_sum(self) -> float:
+        """Total implied probability across this market's quotable siblings.
+
+        Meaningful only where the event is mutually exclusive and every leg is
+        present; a candidate using it should check `len(siblings)` first, since
+        a partial set sums low for a boring reason.
+        """
+        return sum(s.implied_prob for s in self.siblings if s.has_two_sided_book)
