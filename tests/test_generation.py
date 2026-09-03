@@ -297,11 +297,20 @@ def test_out_of_scope_repo_writes_are_reverted(tmp_path):
     (repo / "stray_note.md").write_text("junk\n")  # untracked, agent-created
     (repo / "candidates" / "ok.py").write_text("x = 1\n")  # in scope
 
+    # Detection is always on.
+    from avo.core.generate import out_of_scope_changes
+    assert set(out_of_scope_changes(repo, repo / "candidates", before)) == {
+        "scorer.py", "stray_note.md"}
+
+    # Reverting is opt-in, and deleting untracked files needs a second opt-in.
     reverted = revert_out_of_scope(repo, repo / "candidates", before)
-    assert set(reverted) == {"scorer.py", "stray_note.md"}
+    assert set(reverted) == {"scorer.py"}, "untracked file deleted without opt-in"
     assert tracked.read_text() == "original\n", "tracked file not restored"
-    assert not (repo / "stray_note.md").exists(), "stray file not removed"
+    assert (repo / "stray_note.md").exists(), "untracked file deleted by default"
     assert (repo / "candidates" / "ok.py").exists(), "in-scope file was destroyed"
+
+    revert_out_of_scope(repo, repo / "candidates", before, delete_untracked=True)
+    assert not (repo / "stray_note.md").exists()
 
 
 def test_work_already_in_progress_is_never_destroyed(tmp_path):
@@ -416,3 +425,22 @@ def test_probe_uses_the_real_market_type_not_a_stub():
         assert "raised" in v.problems[0] and "AttributeError" in v.problems[0]
     finally:
         p.unlink(missing_ok=True)
+
+
+def test_scope_enforcement_does_not_revert_by_default(cdir):
+    """2026-09-03: revert_out_of_scope destroyed a half-built Phase 5 --
+    selection.py and memory.py reverted to stubs, loop.py and its tests deleted
+    -- because they were written while a generation was in flight.
+
+    It compares `git status` before and after a fifteen-minute invocation, so
+    it cannot tell an agent's edit from a concurrent human one. Detection is
+    always on and reported; acting on it is opt-in.
+
+    The proper fix is isolation, not cleanup: run the agent in a separate git
+    worktree so it cannot reach the main tree at all."""
+    import inspect
+    from avo.core.generate import generate_once, revert_out_of_scope
+
+    assert inspect.signature(generate_once).parameters["revert_scope"].default is False
+    assert (inspect.signature(revert_out_of_scope)
+            .parameters["delete_untracked"].default is False)

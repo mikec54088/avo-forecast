@@ -70,37 +70,58 @@ def git_dirty(repo_root: str | Path) -> set[str]:
     return out
 
 
-def revert_out_of_scope(
+def out_of_scope_changes(
     repo_root: str | Path, candidates_dir: str | Path, before: set[str]
 ) -> list[str]:
-    """Undo repo changes the agent made outside the candidates directory.
+    """Repo paths that changed outside the candidates directory.
 
-    A generation agent is a full coding-agent session with the same tool access
-    a person has. The 2026-09-01 trials showed it: twenty invocations left edits
-    in the user's memory directory as well as the candidates they were asked
-    for. Harmless there, but Phase 5 runs this at volume, and a candidate
-    generator that quietly edits the scorer would invalidate the very run it is
-    part of.
-
-    Only paths that were CLEAN before the invocation are touched, so
-    uncommitted work in progress is never destroyed -- a path already dirty is
-    reported and left alone. Tracked files are restored with git checkout;
-    untracked ones the agent created are deleted.
-
-    Returns what was reverted, for the record.
+    Detection only. Acting on it is `revert_out_of_scope`, which is off by
+    default -- see the warning there.
     """
     repo_root = Path(repo_root)
     try:
         rel_scope = str(Path(candidates_dir).resolve().relative_to(repo_root.resolve()))
     except ValueError:
-        # candidates_dir outside the repo (tests, or a relocated experiment):
-        # nothing in the repo is in scope, so every repo change is stray.
         rel_scope = "\0"
     after = git_dirty(repo_root)
-    stray = sorted(
+    return sorted(
         p for p in after - before
         if not p.startswith(rel_scope) and not p.startswith("runs/")
     )
+
+
+def revert_out_of_scope(
+    repo_root: str | Path,
+    candidates_dir: str | Path,
+    before: set[str],
+    delete_untracked: bool = False,
+) -> list[str]:
+    """Undo tracked repo changes outside the candidates directory.
+
+    OFF BY DEFAULT, and it should stay that way unless the caller controls the
+    whole machine for the duration of the run.
+
+    This cannot distinguish an agent's edit from a human's. It compares
+    `git status` before and after an invocation that takes fifteen minutes, so
+    anything written during that window looks like the agent did it. On
+    2026-09-03 that destroyed a half-built Phase 5 -- selection.py and
+    memory.py reverted to their stubs, loop.py and its tests deleted outright
+    -- because they were written while a generation was in flight. The earlier
+    safety rule (only touch paths that were clean beforehand) protected
+    uncommitted work that already existed and did nothing for work created
+    during the run.
+
+    Deleting untracked files is worse than reverting tracked ones: a tracked
+    file reverts to its committed state, an untracked file is simply gone. It
+    now requires `delete_untracked` on top of opting in at all.
+
+    The correct fix is isolation rather than cleanup -- run the agent in a
+    separate git worktree so it cannot reach the main tree, and copy the
+    candidate back. Until that exists, detection with a loud report is the
+    honest default.
+    """
+    repo_root = Path(repo_root)
+    stray = out_of_scope_changes(repo_root, candidates_dir, before)
     if not stray:
         return []
 
@@ -114,11 +135,13 @@ def revert_out_of_scope(
     if tracked:
         subprocess.run(["git", "checkout", "--", *tracked], cwd=str(repo_root),
                        capture_output=True, timeout=60, check=False)
-    for rel in untracked:
-        target = repo_root / rel
-        if target.is_file():
-            target.unlink(missing_ok=True)
-    return stray
+    if delete_untracked:
+        for rel in untracked:
+            target = repo_root / rel
+            if target.is_file():
+                target.unlink(missing_ok=True)
+        return stray
+    return tracked
 
 
 def external_writes(paths: Sequence[str | Path], since: float) -> list[str]:
@@ -168,6 +191,8 @@ def generate_once(
     timeout_s: int = 600,
     keep: bool = False,
     watch_paths: Sequence[str | Path] | None = None,
+    revert_scope: bool = False,
+    delete_untracked: bool = False,
 ) -> Attempt:
     """Invoke the backend once and validate whatever candidate it wrote.
 
@@ -186,13 +211,21 @@ def generate_once(
 
     result = backend.run(prompt, str(repo_root), timeout_s)
 
-    # Enforced, not requested: the agent may write anywhere it likes, and this
-    # puts back everything outside the candidates directory.
-    reverted = tuple(revert_out_of_scope(repo_root, candidates_dir, dirty_before))
+    # Detected and reported by default; reverted only if the caller opts in.
+    # This cannot tell an agent's edit from a concurrent human one -- see
+    # revert_out_of_scope.
+    if revert_scope:
+        reverted = tuple(revert_out_of_scope(repo_root, candidates_dir,
+                                             dirty_before, delete_untracked))
+        stray = reverted
+    else:
+        stray = tuple(out_of_scope_changes(repo_root, candidates_dir, dirty_before))
+        reverted = ()
     external = tuple(external_writes(watch_paths or (), started_at))
-    if reverted:
-        print(f"      reverted {len(reverted)} out-of-scope change(s): "
-              f"{', '.join(reverted[:4])}", flush=True)
+    if stray:
+        verb = "reverted" if revert_scope else "NOTE out-of-scope"
+        print(f"      {verb} {len(stray)} change(s) outside the candidates dir: "
+              f"{', '.join(stray[:4])}", flush=True)
     if external:
         print(f"      NOTE {len(external)} file(s) written outside the repo "
               f"(not reverted): {', '.join(external[:3])}", flush=True)
@@ -217,12 +250,12 @@ def generate_once(
 
     if reason and not fresh:
         return Attempt(attempt_id, backend.name, False, reason, result.elapsed_s,
-                       tuple(result.files_written), reverted=reverted, external=external)
+                       tuple(result.files_written), reverted=stray, external=external)
 
     if not fresh:
         return Attempt(attempt_id, backend.name, False,
                        "no candidate file was written", result.elapsed_s,
-                       tuple(result.files_written), reverted=reverted, external=external)
+                       tuple(result.files_written), reverted=stray, external=external)
 
     probe = experiment.validation_probe()
     validations: list[Validation] = [
@@ -240,7 +273,7 @@ def generate_once(
         return Attempt(attempt_id, backend.name, True, "accepted", result.elapsed_s,
                        tuple(result.files_written),
                        tuple(asdict(v) for v in validations), good[0].path, stamped,
-                       reverted, external)
+                       stray, external)
 
     if not keep:
         for v in validations:
@@ -249,7 +282,7 @@ def generate_once(
         attempt_id, backend.name, False,
         "; ".join(p for v in validations for p in v.problems) or "rejected",
         result.elapsed_s, tuple(result.files_written),
-        tuple(asdict(v) for v in validations), reverted=reverted, external=external,
+        tuple(asdict(v) for v in validations), reverted=stray, external=external,
     )
 
 

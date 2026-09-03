@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any, Sequence
 
 from avo.core.holdout import assert_clean, eligible
+from avo.core.selection import is_confirmation_group
 from avo.core.types import Candidate, Score
 from experiments.kalshi_quant.observations import (
     ENTRY_POLICY,
@@ -164,6 +165,7 @@ class KalshiQuantExperiment:
         loaded: Any,
         entries: Sequence[Entry] | None = None,
         history: SeriesHistory | None = None,
+        subset: str = "all",
     ) -> Score:
         """Brier skill vs the market's implied probability (INVARIANT #2).
 
@@ -175,6 +177,20 @@ class KalshiQuantExperiment:
             entries = load_entries()
         if history is None:
             history = SeriesHistory(list(entries))
+
+        # `subset` splits by SERIES for selection honesty, not by market. The
+        # failure guarded against is a winner that only works on whichever
+        # series dominated the sample, and Kalshi's top 20 series are over half
+        # of all observations -- a random market-level split would leave the
+        # same series on both sides and test nothing.
+        if subset != "all":
+            want_conf = subset == "confirmation"
+            entries = [e for e in entries
+                       if is_confirmation_group(e.market.series_ticker) == want_conf]
+            if not entries:
+                return Score(candidate.candidate_id, float("nan"),
+                             (float("nan"), float("nan")), 0,
+                             notes=f"no observations in the {subset} subset")
 
         # INVARIANT #1: only truth that resolved strictly after this candidate
         # existed. assert_clean afterwards is not redundant -- it is the
@@ -252,7 +268,7 @@ class KalshiQuantExperiment:
             },
             notes=(
                 f"entry policy: {ENTRY_POLICY}; primary_ci is series-clustered; "
-                f"{errors} errors"
+                f"subset={subset}; {errors} errors"
             ),
         )
 
@@ -400,7 +416,74 @@ class KalshiQuantExperiment:
 """
 
     def variation_prompt(self, parent: Candidate, siblings: Sequence[Score]) -> str:
-        raise NotImplementedError("Phase 4 -- needs generation 1 scores.")
+        """What to tell the agent, given what has already been tried.
+
+        The whole value is the failure list. A loop that cannot name its own
+        dead ends rediscovers them: the generic prompt used on 2026-09-01
+        produced 25 candidates that collapsed to about 7 ideas, four of them
+        near-identical log-odds midpoints.
+
+        The cost hurdle is stated explicitly because it is the constraint every
+        failure so far has run into. 26 candidates were often right about
+        direction and still lost money, because crossing the spread costs about
+        2 probability points while every measurable bias is 1-3.
+        """
+        lines = [
+            "Write ONE new forecasting candidate for the kalshi_quant "
+            "experiment in this repository.",
+            "",
+            "Read experiments/kalshi_quant/types.py for the contract, and "
+            "experiments/kalshi_quant/candidates/favourite_longshot.py for the "
+            "house style.",
+            "",
+            "THE GOVERNING CONSTRAINT. Crossing the spread plus fees costs about "
+            "2 probability points even on the tightest books, while every bias "
+            "measured so far is 1-3 points. Beating the midpoint is not enough: "
+            "a candidate must beat it by MORE THAN 2 POINTS on markets it can "
+            "identify in advance. Most failures below were right about direction "
+            "and still lost money.",
+            "",
+        ]
+        if parent is not None:
+            lines += [
+                f"PARENT: {parent.candidate_id} (module {parent.module_path})",
+                f"  rationale: {parent.rationale}",
+                "Read it. Your candidate should differ in MECHANISM, not just in "
+                "constants -- retuning a threshold is not a new hypothesis.",
+                "",
+            ]
+
+        ranked = sorted((s for s in siblings if s.primary == s.primary),
+                        key=lambda s: -s.primary)
+        if ranked:
+            lines.append("ALREADY TRIED AND SCORED. Do not resubmit a variation "
+                         "of these:")
+            for s in ranked[:24]:
+                pnl = s.secondary.get("pnl_per_contract", float("nan"))
+                lo, hi = s.primary_ci
+                money = "no profit" if pnl != pnl or pnl <= 0 else f"P&L {pnl:+.4f}"
+                lines.append(f"  {s.candidate_id:<26} skill {s.primary:+.4f} "
+                             f"[{lo:+.4f},{hi:+.4f}]  n={s.n_observations:,}  {money}")
+            lines.append("")
+
+        lines += [
+            "UNEXPLORED. ForecastContext carries two fields almost nothing uses:",
+            "  price_history  this market's own earlier quotes, oldest first",
+            "  siblings       other markets in the same EVENT, quoted at about "
+            "the same time",
+            "",
+            "Prefer a candidate that ABSTAINS often and acts strongly on a "
+            "well-defined subset over one that nudges every market slightly -- "
+            "the failures above nudged everything and paid the spread for it.",
+            "",
+            "Give it a docstring stating the edge, the evidence for it, and what "
+            "would falsify it. Be honest about weak evidence; a candidate that "
+            "overstates its case is worse than one admitting it is a guess.",
+            "",
+            "Do not modify, create, or delete ANY file outside "
+            "experiments/kalshi_quant/candidates/.",
+        ]
+        return "\n".join(lines)
 
 
 def build() -> KalshiQuantExperiment:
