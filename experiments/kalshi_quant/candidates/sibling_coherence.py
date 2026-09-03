@@ -18,6 +18,25 @@ belongs to the event and this is one leg of it.
 This is WITHIN-event structure, not cross-venue arbitrage -- INVARIANT #6 rules
 that out for being the easiest thing to find and not the research question.
 
+KNOWN FLAW, recorded 2026-09-03 and left in place deliberately. The premise
+that event legs "should sum to about 1.0" is false for a whole class of Kalshi
+events. Many are NESTED LADDERS -- "over 1.5 goals", "over 2.5", "over 3.5" on
+one match -- whose legs are ordered by inclusion, can all settle yes together,
+and correctly sum well above 1.0. This candidate reads that correct pricing as
+mispricing and fades it.
+
+MAX_EXCESS at 0.25 catches the most extreme ladders and abstains, but a
+three-rung ladder summing to 1.2 sails through. That is the likeliest
+explanation for its score of -0.0000: genuine signal on exclusive events
+averaged against noise on ladders, cancelling to an unusually precise zero
+(clustered CI [-0.0003, +0.0002], the tightest in the set).
+
+The fix is to detect exclusivity rather than assume it, which is a different
+candidate rather than a tweak to this one -- changing the behaviour here would
+make its existing score incomparable. Credit for the observation goes to
+ladder_leader, generated on 2026-09-03, which trades the same structure from
+the opposite side.
+
 Abstains without at least two quotable siblings: a partial set sums low for a
 boring reason, and reading that as mispricing would be a bug wearing a
 strategy's clothes.

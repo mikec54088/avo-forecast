@@ -86,7 +86,7 @@ MANIFEST = {
     "candidate_id": "ladder_leader",
     "generation": 2,
     "parent_id": "sibling_coherence",
-    "created_at": "2026-09-03T18:45:00+00:00",
+    "created_at": "2026-09-03T17:36:21.683461+00:00",
     "rationale": (
         "In non-exclusive events (nested threshold ladders, legs summing well "
         "above 1.0), the loosest rung is underpriced when it leads the next by "
