@@ -41,6 +41,7 @@ from experiments.kalshi_quant.types import ForecastContext, MarketSnapshot
 
 MANIFEST = {
     "candidate_id": "baseline_sharpened",
+    "role": "control",
     "generation": 0,
     "parent_id": None,
     # Same instant as the other three controls. Under INVARIANT #1 a different

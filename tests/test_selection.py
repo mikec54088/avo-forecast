@@ -109,3 +109,27 @@ def test_loop_refuses_to_rank_a_cohort_with_no_observations():
     first has a real score, rank on noise, breed from the winner."""
     assert not ready_to_rank([_score("just_written", 0.5, (0.4, 0.6), n=12)])
     assert ready_to_rank([_score("aged", 0.01, (0.0, 0.02), n=10_000)])
+
+
+def test_controls_are_never_chosen_as_parents():
+    """The first live loop on 2026-09-05 picked baseline_sharpened and
+    control_middle_only as parents. One is a tripwire that earns skill because
+    the fitness denominator is biased and makes no money; the other trades the
+    band the market prices correctly and exists to fail. Both score mildly
+    positive, so a skill-only policy picks them -- and spends a generation
+    optimising toward the traps the P&L gate exists to catch.
+
+    A control is an instrument. Improving it destroys its use."""
+    scored = [_score("control_middle_only", 0.05, (0.04, 0.06)),
+              _score("baseline_sharpened", 0.04, (0.03, 0.05)),
+              _score("real_candidate", 0.01, (0.005, 0.015))]
+    policy = SelectionPolicy(exclude=["control_middle_only", "baseline_sharpened"])
+    assert [p.candidate_id for p in policy.choose_parents(scored, 3)] == ["real_candidate"]
+
+
+def test_controls_stay_excluded_even_when_nothing_scores_positive():
+    """The fallback path must not quietly reintroduce them."""
+    scored = [_score("control_middle_only", -0.001, (-0.002, 0.0)),
+              _score("real_candidate", -0.02, (-0.03, -0.01))]
+    policy = SelectionPolicy(exclude=["control_middle_only"])
+    assert [p.candidate_id for p in policy.choose_parents(scored, 2)] == ["real_candidate"]

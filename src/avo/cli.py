@@ -40,7 +40,9 @@ def main() -> None:
     ev.add_argument("--model", default=None)
     ev.add_argument("-n", type=int, default=8, help="candidates per generation")
     ev.add_argument("--generations", type=int, default=1)
-    ev.add_argument("--timeout", type=int, default=900)
+    ev.add_argument("--timeout", type=int, default=1800,
+                    help="seconds per invocation; the informed prompt makes "
+                         "agents analyse data first and 900 was too tight")
     ev.add_argument("--run-id", default=None, help="resume an existing run")
     ev.add_argument("--force", action="store_true",
                     help="generate even when the newest cohort has too few "
@@ -152,6 +154,10 @@ def _evolve(args) -> None:
 
     repo_root = Path(__file__).resolve().parents[2]
     exp = registry.load(args.experiment)
+    # Controls are instruments, not candidates to improve. Breeding from one
+    # spends a generation optimising toward a known dead end.
+    controls = [c.candidate_id for c in exp.seed_candidates()
+                if c.meta.get("role") == "control"]
     cdir = repo_root / "experiments" / args.experiment / "candidates"
     factory = BACKENDS[args.backend]
     backend = factory(args.model) if args.backend == "claude" else factory()
@@ -175,7 +181,7 @@ def _evolve(args) -> None:
                 "--force knowingly."
             )
         rec = run_generation(exp, backend, memory, cdir, repo_root, g, args.n,
-                             SelectionPolicy(), entries, history,
+                             SelectionPolicy(exclude=controls), entries, history,
                              timeout_s=args.timeout, watch_paths=watch)
         print(f"  generation {g}: {rec.notes}")
         print(f"  checkpointed -> runs/{run_id}/gen{g:03d}.json")

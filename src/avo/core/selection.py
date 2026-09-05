@@ -115,13 +115,34 @@ class SelectionPolicy:
     high-skill unprofitable candidate being mistaken for a discovery.
     """
 
-    def __init__(self, require_positive: bool = True, min_observations: int = 500):
+    def __init__(
+        self,
+        require_positive: bool = True,
+        min_observations: int = 500,
+        exclude: Sequence[str] = (),
+    ):
         self.require_positive = require_positive
         self.min_observations = min_observations
+        # Diagnostic instruments, never parents. See eligible().
+        self.exclude = set(exclude)
 
     def eligible(self, scored: Sequence[Score]) -> list[Score]:
+        """Candidates fit to breed from.
+
+        Controls are excluded, and that is not a detail. The first live loop on
+        2026-09-05 chose baseline_sharpened and control_middle_only as parents:
+        one is a tripwire that earns skill precisely because the fitness
+        denominator is biased and makes no money, the other trades the band the
+        market prices correctly and exists to fail. Both score mildly positive,
+        so a policy that only looks at skill picks them -- and then spends a
+        generation optimising toward the traps the P&L gate exists to catch.
+
+        A control is an instrument. Improving it destroys its use.
+        """
         out = []
         for s in scored:
+            if s.candidate_id in self.exclude:
+                continue
             if s.primary != s.primary:                     # NaN
                 continue
             if s.n_observations < self.min_observations:
@@ -142,7 +163,8 @@ class SelectionPolicy:
         pool = self.eligible(scored)
         if not pool:
             pool = [s for s in scored
-                    if s.primary == s.primary
+                    if s.candidate_id not in self.exclude
+                    and s.primary == s.primary
                     and s.n_observations >= self.min_observations]
         pool.sort(key=lambda s: (-s.primary, -s.n_observations))
         return pool[:k]

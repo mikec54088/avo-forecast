@@ -4,6 +4,7 @@ from experiments.kalshi_quant.types import ForecastContext, MarketSnapshot
 
 MANIFEST = {
     "candidate_id": "baseline_base_rate",
+    "role": "control",
     "generation": 0,
     "parent_id": None,
     "created_at": "2026-01-01T00:00:00+00:00",
