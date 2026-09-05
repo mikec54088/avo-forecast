@@ -144,6 +144,59 @@ def revert_out_of_scope(
     return tracked
 
 
+def restore_overwritten(
+    repo_root: str | Path, paths: Sequence[str | Path]
+) -> tuple[list[str], list[str]]:
+    """Put back candidates an agent overwrote. Returns (restored, unrecoverable).
+
+    A candidate filename that already existed is not a new candidate, it is a
+    replacement for one that was being scored. The loss is silent in a way the
+    directory cannot show afterwards: `after - before` never sees an overwrite,
+    so the file is neither validated nor stamped, while the run's record still
+    names the candidate that used to be there. On 2026-09-05 two attempts in one
+    generation both wrote ladder_upper_body.py, and gen001.json lists it twice
+    for two different candidates, one of which no longer exists.
+
+    A tracked file is restored from git and is genuinely recovered. An untracked
+    one was destroyed by the write itself and cannot be. It is moved aside to
+    `<name>.py.overwritten` rather than left in place or deleted: leaving it
+    would keep the agent's unvalidated, unstamped candidate sitting under the
+    old one's filename, where seed_candidates() imports it as the candidate it
+    replaced -- the same silent registry poisoning this function exists to stop,
+    only wearing the dead candidate's name. Deleting it would destroy the one
+    copy of work that may be worth reading. Neither file is a candidate
+    afterwards, which is the honest outcome: the original is gone.
+    """
+    repo_root = Path(repo_root)
+    restored: list[str] = []
+    lost: list[str] = []
+
+    def _git(*args: str) -> int:
+        return subprocess.run(["git", *args], cwd=str(repo_root),
+                              capture_output=True, text=True, timeout=60,
+                              check=False).returncode
+
+    for path in paths:
+        src = Path(path)
+        try:
+            rel = str(src.resolve().relative_to(repo_root.resolve()))
+        except ValueError:
+            rel = ""
+        # Recoverable only if git is holding a copy of what was there.
+        if rel and _git("ls-files", "--error-unmatch", rel) == 0 \
+                and _git("checkout", "--", rel) == 0:
+            restored.append(rel)
+            continue
+        # Not recoverable. Move the replacement out of the registry so it stops
+        # impersonating the candidate it destroyed, without deleting it.
+        try:
+            src.replace(src.parent / (src.name + ".overwritten"))
+        except OSError:
+            pass
+        lost.append(rel or str(src))
+    return restored, lost
+
+
 def external_writes(paths: Sequence[str | Path], since: float) -> list[str]:
     """Files under `paths` modified after `since`. Reported, never reverted.
 
@@ -180,6 +233,11 @@ class Attempt:
     created_at: str = ""
     reverted: Sequence[str] = field(default_factory=tuple)
     external: Sequence[str] = field(default_factory=tuple)
+    # EVERY accepted candidate this attempt produced, not just the first. One
+    # invocation can write more than one, and a file the record does not name
+    # is a file nothing later accounts for -- see generate_once.
+    kept_paths: Sequence[str] = field(default_factory=tuple)
+    collided: Sequence[str] = field(default_factory=tuple)
 
 
 def generate_once(
@@ -248,14 +306,35 @@ def generate_once(
         | set(new_candidate_files(result.files_written, candidates_dir))
     )
 
+    # A write onto an EXISTING candidate filename is a replacement, not a new
+    # candidate, and it is never what the loop wants: the file it landed on is
+    # already in the registry and already being scored. Only files_written can
+    # surface one, since an overwrite leaves `after - before` unchanged. Take
+    # them out of `fresh` before validation -- accepting one would stamp a
+    # candidate the record already attributes to something else.
+    collided = [f for f in fresh if Path(f).name in before]
+    if collided:
+        fresh = [f for f in fresh if f not in set(collided)]
+        restored, lost = restore_overwritten(repo_root, collided)
+        if restored:
+            print(f"      restored {len(restored)} overwritten candidate(s): "
+                  f"{', '.join(Path(r).name for r in restored)}", flush=True)
+        if lost:
+            print(f"      LOST {len(lost)} overwritten candidate(s), untracked and "
+                  f"unrecoverable: {', '.join(Path(x).name for x in lost)}", flush=True)
+
     if reason and not fresh:
         return Attempt(attempt_id, backend.name, False, reason, result.elapsed_s,
-                       tuple(result.files_written), reverted=stray, external=external)
+                       tuple(result.files_written), reverted=stray,
+                       external=external, collided=tuple(collided))
 
     if not fresh:
-        return Attempt(attempt_id, backend.name, False,
-                       "no candidate file was written", result.elapsed_s,
-                       tuple(result.files_written), reverted=stray, external=external)
+        why = ("only overwrote existing candidate(s): "
+               + ", ".join(Path(c).name for c in collided)) if collided else \
+              "no candidate file was written"
+        return Attempt(attempt_id, backend.name, False, why, result.elapsed_s,
+                       tuple(result.files_written), reverted=stray,
+                       external=external, collided=tuple(collided))
 
     probe = experiment.validation_probe()
     validations: list[Validation] = [
@@ -269,11 +348,27 @@ def generate_once(
                 Path(v.path).unlink(missing_ok=True)
         # Stamp AFTER validation: the probe checks created_at is present, and
         # this makes it truthful. See stamp_created_at.
-        stamped = stamp_created_at(good[0].path)
+        #
+        # EVERY accepted file, not just the first. One invocation can write two
+        # candidates, and the rejected ones above are the only files this
+        # function removes -- so a second accepted file stays on disk, where
+        # seed_candidates() globs it into the registry. Stamping only good[0]
+        # left it there carrying whatever created_at the agent chose, which is
+        # the exact failure stamp_created_at exists to prevent, arriving through
+        # a second door. On 2026-09-05 it put persistent_quote_favourite into
+        # the registry backdated 29 hours, with 83% of its scored observations
+        # already resolved when the file was written.
+        #
+        # One timestamp for the batch: they were written by one invocation, and
+        # giving them different clocks would imply an ordering that does not
+        # exist.
+        when = datetime.now(timezone.utc)
+        stamps = [stamp_created_at(v.path, when) for v in good]
         return Attempt(attempt_id, backend.name, True, "accepted", result.elapsed_s,
                        tuple(result.files_written),
-                       tuple(asdict(v) for v in validations), good[0].path, stamped,
-                       stray, external)
+                       tuple(asdict(v) for v in validations), good[0].path,
+                       stamps[0], stray, external,
+                       tuple(v.path for v in good), tuple(collided))
 
     if not keep:
         for v in validations:
@@ -283,6 +378,7 @@ def generate_once(
         "; ".join(p for v in validations for p in v.problems) or "rejected",
         result.elapsed_s, tuple(result.files_written),
         tuple(asdict(v) for v in validations), reverted=stray, external=external,
+        collided=tuple(collided),
     )
 
 
@@ -313,12 +409,17 @@ def run_trial(
     for i in range(n):
         a = generate_once(backend, experiment, prompt, candidates_dir,
                           repo_root, timeout_s, keep=keep, watch_paths=watch_paths)
-        if a.accepted and stash and a.kept_path:
-            dest = stash / Path(a.kept_path).name
-            shutil.move(a.kept_path, dest)
+        if a.accepted and stash and a.kept_paths:
+            # Move all of them. Leaving the second behind would put an unscored
+            # candidate in the registry, which is what a trial must not do.
+            moved = []
+            for src in a.kept_paths:
+                dest = stash / Path(src).name
+                shutil.move(src, dest)
+                moved.append(str(dest))
             a = Attempt(a.attempt_id, a.backend, a.accepted, a.reason, a.elapsed_s,
-                        a.files_written, a.validations, str(dest), a.created_at,
-                        a.reverted, a.external)
+                        a.files_written, a.validations, moved[0], a.created_at,
+                        a.reverted, a.external, tuple(moved), a.collided)
         attempts.append(a)
         print(f"  [{i + 1}/{n}] {'ACCEPT' if a.accepted else 'REJECT'} "
               f"{a.elapsed_s:5.0f}s  {a.reason[:90]}", flush=True)
@@ -359,6 +460,13 @@ def summarise(attempts: Sequence[Attempt]) -> str:
     if n_rev or n_ext:
         lines.append(f"out-of-scope writes: {n_rev} reverted in-repo, "
                      f"{n_ext} outside the repo (reported only)")
+    n_col = sum(len(a.collided) for a in attempts)
+    n_multi = sum(1 for a in attempts if len(a.kept_paths) > 1)
+    if n_col:
+        lines.append(f"{n_col} write(s) landed on an existing candidate filename "
+                     f"and were refused")
+    if n_multi:
+        lines.append(f"{n_multi} invocation(s) produced more than one candidate")
 
     if invalid:
         fails: dict[str, int] = {}

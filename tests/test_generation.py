@@ -6,6 +6,7 @@ including the ones that are hard to provoke on purpose from a real agent.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -225,6 +226,116 @@ def test_stamping_reports_when_it_could_not_find_the_field(tmp_path):
     p = tmp_path / "c.py"
     p.write_text("MANIFEST = {'candidate_id': 'x'}\n")
     assert stamp_created_at(p) == ""
+
+
+# ------------------------------- one invocation, more than one candidate file
+
+SECOND = GOOD.replace("fake_good", "fake_second").replace("0.02", "0.03")
+
+
+def test_every_accepted_candidate_is_stamped_not_just_the_first(cdir):
+    """The second door into INVARIANT #1.
+
+    generate_once only ever removes REJECTED files, so a second accepted one
+    stays on disk, where seed_candidates() globs it into the registry. Stamping
+    good[0] alone left it there carrying whatever created_at the agent wrote,
+    which is exactly what stamp_created_at exists to prevent. On 2026-09-05 that
+    put persistent_quote_favourite into the registry backdated 29 hours, with
+    83% of its scored observations already resolved when the file was written.
+    """
+    a = _run(cdir, {"fake_good.py": GOOD, "fake_second.py": SECOND})
+    assert a.accepted
+    assert len(a.kept_paths) == 2, "both accepted files must be recorded"
+    for path in a.kept_paths:
+        src = Path(path).read_text()
+        assert "2026-09-01T00:00:00" not in src, f"{path} kept the agent's timestamp"
+        assert a.created_at in src, f"{path} was not stamped"
+
+
+def test_candidates_from_one_invocation_share_one_timestamp(cdir):
+    a = _run(cdir, {"fake_good.py": GOOD, "fake_second.py": SECOND})
+    stamps = {re.search(r'"created_at"\s*:\s*"([^"]+)"', Path(p).read_text()).group(1)
+              for p in a.kept_paths}
+    assert len(stamps) == 1, "one invocation implies one creation instant"
+
+
+def test_a_write_onto_an_existing_candidate_is_refused(cdir):
+    """Two attempts wrote ladder_upper_body.py on 2026-09-05 and the second
+    silently replaced the first; gen001.json names it twice for two different
+    candidates, one of which no longer exists. An overwrite is invisible to
+    `after - before`, so it has to be caught by name."""
+    (cdir / "fake_good.py").write_text(GOOD)
+    a = _run(cdir, {"fake_good.py": SECOND})
+    assert not a.accepted
+    assert "overwrote" in a.reason
+    assert [Path(c).name for c in a.collided] == ["fake_good.py"]
+
+
+def test_an_overwrite_does_not_hide_a_genuinely_new_candidate(cdir):
+    (cdir / "fake_good.py").write_text(GOOD)
+    a = _run(cdir, {"fake_good.py": SECOND, "fake_third.py": SECOND.replace(
+        "fake_second", "fake_third")})
+    assert a.accepted
+    assert [Path(k).name for k in a.kept_paths] == ["fake_third.py"]
+    assert [Path(c).name for c in a.collided] == ["fake_good.py"]
+
+
+def test_an_untracked_overwrite_is_reported_as_unrecoverable(cdir, capsys):
+    """A tracked file comes back from git; an untracked one was destroyed by the
+    write itself. Saying so is the only honest option -- see restore_overwritten."""
+    (cdir / "fake_good.py").write_text(GOOD)
+    _run(cdir, {"fake_good.py": SECOND})
+    assert "unrecoverable" in capsys.readouterr().out
+
+
+def test_an_unrecoverable_overwrite_leaves_no_candidate_wearing_the_old_name(cdir):
+    """Left in place, the agent's unvalidated file is imported by
+    seed_candidates() as the candidate it replaced -- unstamped, under a name
+    the registry already trusts. Moved aside, it is readable and is not a
+    candidate."""
+    (cdir / "fake_good.py").write_text(GOOD)
+    _run(cdir, {"fake_good.py": SECOND})
+    assert not (cdir / "fake_good.py").exists()
+    assert (cdir / "fake_good.py.overwritten").read_text() == SECOND
+    assert not list(cdir.glob("*.py")), "no .py may survive an unrecoverable overwrite"
+
+
+def test_a_trial_stashes_every_candidate_an_invocation_produced(cdir, tmp_path):
+    """Leaving the second behind would put an unscored candidate in the
+    registry, which is the one thing a trial must not do."""
+    stash = tmp_path / "stash"
+    be = FakeBackend(writes={"fake_good.py": GOOD, "fake_second.py": SECOND},
+                     target=cdir)
+    run_trial(be, registry.load("kalshi_quant"), "p", cdir, REPO, n=1,
+              timeout_s=30, out_dir=stash)
+    assert not list(cdir.glob("*.py")), "registry left holding a trial candidate"
+    assert {p.name for p in stash.glob("*.py")} == {"fake_good.py", "fake_second.py"}
+
+
+def test_a_tracked_overwrite_is_restored_from_git(tmp_path):
+    """The half that actually recovers data. An untracked overwrite is gone for
+    good; a tracked one is still in the object store, so it comes back."""
+    import subprocess
+
+    from avo.core.generate import restore_overwritten
+
+    def git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, check=True)
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    target = tmp_path / "candidates"
+    target.mkdir()
+    (target / "kept.py").write_text(GOOD)
+    git("add", "-A")
+    git("commit", "-qm", "seed")
+
+    (target / "kept.py").write_text("clobbered")
+    restored, lost = restore_overwritten(tmp_path, [target / "kept.py"])
+
+    assert restored == ["candidates/kept.py"] and not lost
+    assert (target / "kept.py").read_text() == GOOD, "the original did not come back"
 
 
 # ------------------------------------------------- probe coverage regression

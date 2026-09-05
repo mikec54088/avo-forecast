@@ -121,12 +121,18 @@ def run_generation(
         prompt = experiment.variation_prompt(parent, prior)
         a = generate_once(backend, experiment, prompt, candidates_dir, repo_root,
                           timeout_s=timeout_s, watch_paths=watch_paths)
-        tag = Path(a.kept_path).stem if a.kept_path else "-"
+        # Every accepted file, not just the first: one invocation can write
+        # more than one candidate, and both land in the registry. A record that
+        # names only one leaves the other unaccounted for -- which is how
+        # persistent_quote_favourite came to be scored on 2026-09-05 without
+        # appearing in any generation's candidate_ids.
+        tags = [Path(k).stem for k in a.kept_paths] or (
+            [Path(a.kept_path).stem] if a.kept_path else [])
         print(f"  [{i + 1}/{n_candidates}] "
-              f"{'ACCEPT ' + tag if a.accepted else 'REJECT ' + a.reason[:70]}",
+              f"{'ACCEPT ' + ', '.join(tags) if a.accepted else 'REJECT ' + a.reason[:70]}",
               flush=True)
         if a.accepted:
-            made.append(tag)
+            made.extend(tags)
 
     rec = GenerationRecord(
         generation=generation,
