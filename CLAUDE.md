@@ -51,90 +51,64 @@ If a task appears to require one of these, say so and stop. Do not work around i
 
 ---
 
-## Current phase: 0 + 1 + 2
+## Current phase: 5 — the generational loop
 
-Do NOT build memory, selection, or the supervisor. They raise
-`NotImplementedError` deliberately — building them before real scoring data
-exists means tuning heuristics against imagination.
+Phases 0-4 are done; see `docs/ROADMAP.md` for what each concluded. The loop
+runs via `uv run python -m avo.cli evolve kalshi_quant`, and
+`uv run python -m avo.cli rank kalshi_quant` scores and confirms without
+generating.
 
-### Priorities, in order
+Phase 6 (the supervisor) is still deliberately unbuilt, and so is `PriorsStore`
+— cross-run priors tuned against two runs would be heuristics fitted to
+imagination.
 
-**P0 was "get snapshots flowing today". Met 2026-08-24 — and it stays the
-standing priority: if capture ever stops, fixing it outranks everything below.**
+### The standing priority
 
-Top-of-book at 2pm today is gone forever if nothing captured it. Resolutions
-are NOT in this category — Kalshi keeps settled markets queryable via
-`status=settled`, so the settle path can be backfilled later. Snapshots cannot.
-That asymmetry does not expire: an hour of downtime is an hour of observations
-that no later work can recover.
+**If capture stops, fixing it outranks everything else.** Top-of-book at 2pm
+today is gone forever if nothing captured it. Resolutions are NOT in this
+category — Kalshi keeps settled markets queryable, so `settle()` is
+backfillable. Snapshots are not, and that asymmetry never expires.
 
-0. **DONE 2026-08-24.** Snapshots are flowing. Field names are verified in
-   `types.py` (all prices are decimal strings in dollars, not cents), and the
-   scheduler is running.
+Capture is three launchd agents, NOT cron — on macOS cron is TCC-blocked and
+fails completely silently. See `scripts/launchd/README.md`. Verify by checking
+that data lands, never that a job is loaded:
 
-   **Scheduling: use `scripts/launchd/`, not cron.** On macOS, cron is subject
-   to TCC and fails *completely silently* without Full Disk Access — a correct
-   crontab line installed on 2026-08-24 (macOS 26.5) never executed once, with
-   nothing in `data/capture.log`, no lock file, and no error anywhere.
-   `crontab -l` showing the right line proves nothing. `scripts/cron.example`
-   is kept only for non-macOS hosts.
+    launchctl list | grep avoforecast          # 2nd column is last exit status
+    ls data/kalshi_quant/snapshots/date=*/     # near pass every 15 min
 
-   Verify by checking that data lands, never by checking that a job is loaded:
+### What has actually been learned
 
-       launchctl list | grep avoforecast      # 2nd column is last exit status
-       ls data/kalshi_quant/snapshots/date=*/ # a new file every 15 min
+Read this before proposing anything; most obvious ideas are already dead.
 
-   If snapshots ever stop, that is the highest-priority bug in the project —
-   every hour without them is unrecoverable.
+- **Generation 1 was a clean null.** 26 candidates on ~56,000 resolved markets,
+  every one failing the P&L gate. The favourite-longshot bias measured 3-4.5
+  points in-sample and did not replicate forward.
+- **The cost hurdle is ~2 probability points** (1c half-spread + 1c fee) even on
+  the tightest books, while every bias measured is 1-3 points. "Beat the
+  midpoint" is not the target; "beat it by >2 points on a subset identifiable in
+  advance" is.
+- **Skill and money disagree.** `microprice_fair_value` had the best skill in
+  the set and significantly lost money. Always read `avo rank` and the P&L gate
+  together.
+- **Intervals must be series-clustered.** The i.i.d. bootstrap ran 2.3x too
+  narrow; `primary_ci` is clustered and the i.i.d. one is kept only as a
+  diagnostic ratio.
+- **Entry staleness inflates skill but not P&L**, which is why `ENTRY_POLICY`
+  caps it at 60 minutes.
+- **`liquidity` is always 0.0** — 610,077 rows, no exceptions. A candidate
+  gating on it silently becomes a constant.
+- **Not every event is mutually exclusive.** Nested ladders ("over 1.5 / 2.5 /
+  3.5 goals") correctly sum above 1.0; `sibling_coherence` assumes exclusivity
+  and is documented as flawed because of it.
 
-1. **DONE 2026-08-24.** The settlement field is verified, not assumed. Over 964
-   settled non-MVE markets, every `result='yes'` paid
-   `settlement_value_dollars=$1.0000` (349/349) and every `result='no'` paid
-   $0.0000 (615/615); median `last_price` at settlement was 0.990 vs 0.010; all
-   182 two-leg events had exactly one `'yes'`. **The mapping is not inverted.**
-   `settle()` re-checks that agreement on every row it writes, since a silent
-   flip here would invert every score in the project.
+### Open decisions
 
-   Two things learned that are easy to get wrong: `resolved_at` must come from
-   `settlement_ts`, not `close_time` (settlement lagged close by 179-189s in
-   every sampled market), and settled markets report `status='finalized'`, not
-   `'settled'` — filter on `result`.
-
-   `settle()` is driven by our own snapshots, not by the global settled feed.
-   That feed is 99.8% MVE parlay combos and is not ordered well enough for any
-   settlement-time window to terminate against; the snapshot-driven lookup costs
-   ~145 requests instead of thousands of pages, and is idempotent, so a missed
-   run costs nothing.
-
-2. **Make the four baselines score end to end** on whatever data has
-   accumulated. Three of them — market-implied, base-rate, shrunk-to-0.5 — must
-   land near zero skill and be statistically indistinguishable from each other.
-   If any of those three shows strong positive skill, the scorer is broken —
-   find the bug, do not celebrate.
-
-   The fourth, `baseline_sharpened`, is inverted on purpose and is **expected**
-   to score positive while the fitness denominator is biased. It exists because
-   the original three were asymmetric: they either sit on the price or pull
-   *toward* 0.5, and the bid-ask midpoint is biased *away* from it. Measured
-   2026-08-24 on 2,921 observations, all three originals behaved exactly as
-   documented while a mild logit sharpen scored +0.0192, CI [+0.0121, +0.0270].
-   So "the controls look fine" is necessary but not sufficient.
-
-   Run `uv run python scripts/check_calibration.py` before accepting this step.
-   If `baseline_sharpened` scores clearly positive, that is not a discovery —
-   it means `market_prob` needs deciding (**G2**), not that anything was found.
-
-3. **Stop and report before Phase 3.** Phase gate G4. Three G2 decisions are
-   open and listed in `docs/ROADMAP.md` Phase 2: `ENTRY_POLICY`, `market_prob`,
-   and enforcing the P&L gate. Skill and money already disagree —
-   `baseline_sharpened` scores +0.0286 while returning -0.0020/contract,
-   because the ~2-point cost of crossing the spread exceeds any bias we can
-   measure. Do not hand-write candidates against a fitness that is still
-   moving; they would all need rescoring. Phase gate G4. Phase 3 (hand-writing
-   8-10 real candidates) is the first phase that generates new strategies
-   rather than plumbing, and `docs/ROADMAP.md` calls it the highest-value
-   phase. Do not start it on the back of a scorer whose denominator question
-   is still open.
+- **G2** — enforce the P&L gate in selection. It is measured and reported but
+  nothing acts on it; `SelectionPolicy` still sorts on skill alone.
+- **G5** — `kalshi_research`, still `status = "planned"`. Note research
+  candidates CANNOT be backtested: replaying a historical market while searching
+  today's web returns the answer. They can only be evaluated forward, which is
+  why the cost model differs and why starting their holdout clock early matters.
 
 ---
 

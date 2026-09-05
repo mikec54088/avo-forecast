@@ -36,7 +36,7 @@ positive skill from any of them means the scorer is broken, whereas
 denominator is biased, and ~0 once it is not. Without it the control set only
 probes the direction toward 0.5 — see the Phase 2 note below.
 
-## Phase 2 — scorer  [IN PROGRESS]
+## Phase 2 — scorer  [DONE 2026-08-31]
 Brier skill vs market implied. Temporal holdout enforcement. Pessimistic fill
 model for the secondary P&L gate.
 **Done when** the three symmetric baselines (market-implied, base-rate,
@@ -92,25 +92,64 @@ than as a result.
 > shading is concentrated in one category. `scripts/recheck.sh` runs both
 > diagnostics and writes a dated report.
 
-## Phase 3 — human as the agent  [week 2-3]
+## Phase 3 — human as the agent  [DONE 2026-09-03]
 Hand-write 8-10 real candidates: time-decay adjustment, favorite-longshot bias
 correction, volume-weighted confidence, cross-series base rates. Score them.
 **Highest-value phase. Do not skip.** This is where you find the missing field
 in the contract, the lookahead bug, the liquidity filter you forgot.
 **Done when** one manual generation has run end to end and you trust the number.
 
-## Phase 4 — single-shot agent  [week 3-4]
+> **Met, and the number was a clean null.** 26 candidates scored on ~56,000
+> resolved markets; every one failed the P&L gate. Notable specifics:
+> the favourite-longshot bias measured 3-4.5 points in-sample and did NOT
+> replicate forward; `microprice_fair_value` had the best skill (+0.0164) and
+> significantly lost money; `price_momentum` returned -0.0554 because drift's
+> edge is non-monotone (it peaks at moderate drift and decays at the extreme)
+> while the candidate extrapolated linearly.
+>
+> ForecastContext gained `price_history` and `siblings` on 2026-09-02 (G1) after
+> the null, on the theory that candidates were blind. First evidence is against
+> that theory: neither field has produced an edge yet.
+
+## Phase 4 — single-shot agent  [DONE 2026-09-01, gate passed 17/20]
 Subprocess wrapper around `claude -p`. One parent + its score in, one candidate
 file out, exit. No memory, no selection, no supervisor. Run it 20 times and
 harden against malformed output.
 **Done when** >80% of invocations produce a candidate the scorer accepts.
 
-## Phase 5 — generational loop  [week 4-6]
+> **Met 2026-09-01: 17/20 = 85%, zero timeouts.** The first attempt read 13/20,
+> and four of the seven failures were the validation probe's fault, not the
+> candidates'. Synthetic probes swept one field at a time from a fixed base, so
+> field COMBINATIONS never occurred and narrow-gate candidates were rejected for
+> "never deviating" when they were simply never triggered. That bias is not
+> random -- it rejects conditional strategies and passes blunt ones. The probe
+> now runs against ~200 real markets.
+
+## Phase 5 — generational loop  [IN PROGRESS from 2026-09-03]
 Memory store (candidates, scores, lineage, distilled reasoning), selection
 policy, batch generation, deployment, harvest. Checkpoint after every candidate
 so a run is resumable — subscription limits make this mandatory, and AVO needs
 it anyway.
 **Done when** generation 2 is seeded from generation 1's results automatically.
+
+> Built 2026-09-03: `core/selection.py`, `core/memory.py`, `core/loop.py`,
+> `variation_prompt`, and `avo evolve` / `avo rank`.
+>
+> **The guard.** The temporal holdout does not stop selecting the maximum over
+> many candidates on the same data. 25% of SERIES are permanently held back;
+> selection never sees them, and a winner is only believed if it holds up there.
+> Split by series because Kalshi's top 20 series are over half of all
+> observations, so a market-level split would leave the same series on both
+> sides and test nothing.
+>
+> `ready_to_rank` refuses to advance until the newest cohort has 2,000
+> observations, because candidates are only scored on markets resolving AFTER
+> they were written and a fresh cohort has no score at all.
+>
+> Two flaws the loop found by being run, which reasoning about it had not:
+> it chose two CONTROLS as parents (they score mildly positive and a skill-only
+> policy picks them), and the scope enforcement reverted concurrent human edits
+> as if they were the agent's.
 
 ## Phase 6 — supervisor  [week 6+]
 Stagnation detection and redirection. Last, deliberately.
