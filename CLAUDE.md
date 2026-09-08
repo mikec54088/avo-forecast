@@ -103,8 +103,11 @@ Read this before proposing anything; most obvious ideas are already dead.
 
 ### Open decisions
 
-- **G2** — enforce the P&L gate in selection. It is measured and reported but
-  nothing acts on it; `SelectionPolicy` still sorts on skill alone.
+- ~~**G2** — enforce the P&L gate in selection.~~ **DECIDED 2026-09-08** (commit
+  `aa1f0ef`). `SelectionPolicy.eligible()` now drops candidates the gate has
+  PROVEN lose money, and `choose_parents()` sorts on (gate verdict, skill, n).
+  Only proven losers are excluded, not everything short of proven profitable:
+  require proof to reject, not proof to survive.
 - **G5** — `kalshi_research`, still `status = "planned"`. Note research
   candidates CANNOT be backtested: replaying a historical market while searching
   today's web returns the answer. They can only be evaluated forward, which is
