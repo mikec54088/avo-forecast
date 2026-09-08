@@ -11,7 +11,12 @@ from datetime import datetime
 from typing import Any, Sequence
 
 from avo.core.holdout import assert_clean, eligible
-from avo.core.selection import is_confirmation_group
+from avo.core.selection import (
+    GATE_FAIL,
+    GATE_PASS,
+    GATE_UNPROVEN,
+    is_confirmation_group,
+)
 from avo.core.types import Candidate, Score
 from experiments.kalshi_quant.observations import (
     ENTRY_POLICY,
@@ -46,12 +51,42 @@ CONTRACT = "forecast(market: MarketSnapshot, context: ForecastContext) -> float"
 PNL_GATE_MIN_FILLS = 200
 
 
+def pnl_verdict(score: Score) -> tuple[int, str]:
+    """(GATE_PASS | GATE_UNPROVEN | GATE_FAIL, reason).
+
+    Three states, not two, because "did not prove it made money" and "proved it
+    lost money" want opposite handling in selection. G2 (decided 2026-09-08)
+    drops only the proven losers from the parent pool: where this gate has power
+    its evidence is decisive, and where a candidate is too selective to have a
+    verdict yet, excluding it would cut off the only branch of the search that
+    has looked promising.
+    """
+    n = int(score.secondary.get("pnl_n_fills", 0))
+    if n < PNL_GATE_MIN_FILLS:
+        if n == 0:
+            return GATE_UNPROVEN, "no position taken (never disagrees with the market)"
+        return GATE_UNPROVEN, f"too few fills to judge ({n} < {PNL_GATE_MIN_FILLS})"
+
+    mean = score.secondary.get("pnl_per_contract", float("nan"))
+    se = score.secondary.get("pnl_se_clustered", float("nan"))
+    if mean != mean or se != se:
+        return GATE_UNPROVEN, "P&L not measurable"
+
+    lo = mean - 1.96 * se
+    if lo > 0:
+        return GATE_PASS, (f"profitable: {mean:+.4f}/contract, "
+                           f"95% CI lower bound {lo:+.4f}")
+    if mean + 1.96 * se < 0:
+        return GATE_FAIL, f"loses money: {mean:+.4f}/contract"
+    return GATE_UNPROVEN, f"not distinguishable from zero: {mean:+.4f}/contract, CI spans 0"
+
+
 def passes_pnl_gate(score: Score) -> tuple[bool, str]:
     """Would this candidate have made money, allowing for noise?
 
-    Returns (passed, reason). Advisory: nothing in this file drops a candidate
-    for failing, because a failing candidate is still evidence. Callers -- and
-    core/selection.py when it exists -- decide what to do with the verdict.
+    Returns (passed, reason). The boolean view of `pnl_verdict`: only GATE_PASS
+    counts as passing, so an unproven candidate and a proven loser both read
+    False here. Selection needs to tell them apart and uses `pnl_verdict`.
 
     Requires the lower bound of the series-clustered 95% interval to exceed
     zero. Two deliberate choices:
@@ -66,23 +101,8 @@ def passes_pnl_gate(score: Score) -> tuple[bool, str]:
     A candidate with too few fills is not judged either way -- PNL_GATE_MIN_FILLS
     guards against a lucky handful of trades reading as an edge.
     """
-    n = int(score.secondary.get("pnl_n_fills", 0))
-    if n < PNL_GATE_MIN_FILLS:
-        if n == 0:
-            return False, "no position taken (never disagrees with the market)"
-        return False, f"too few fills to judge ({n} < {PNL_GATE_MIN_FILLS})"
-
-    mean = score.secondary.get("pnl_per_contract", float("nan"))
-    se = score.secondary.get("pnl_se_clustered", float("nan"))
-    if mean != mean or se != se:
-        return False, "P&L not measurable"
-
-    lo = mean - 1.96 * se
-    if lo > 0:
-        return True, f"profitable: {mean:+.4f}/contract, 95% CI lower bound {lo:+.4f}"
-    if mean + 1.96 * se < 0:
-        return False, f"loses money: {mean:+.4f}/contract"
-    return False, f"not distinguishable from zero: {mean:+.4f}/contract, CI spans 0"
+    verdict, why = pnl_verdict(score)
+    return verdict == GATE_PASS, why
 
 
 def _pct(sorted_vals: list[float], q: float) -> float:

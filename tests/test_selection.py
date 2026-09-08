@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from avo.core.loop import ready_to_rank
 from avo.core.selection import (
+    GATE_FAIL,
+    GATE_PASS,
+    GATE_UNPROVEN,
     SelectionPolicy,
     confirm,
     is_confirmation_group,
@@ -52,6 +55,65 @@ def test_a_series_is_never_split_across_both_halves():
 
 
 # ---------------------------------------------------------------- confirming
+
+# ------------------------------------------- G2: the gate constrains parents
+
+def _gate_from(mapping):
+    return lambda s: (mapping.get(s.candidate_id, GATE_UNPROVEN), "")
+
+
+def test_a_candidate_proven_to_lose_money_is_never_a_parent():
+    """G2, decided 2026-09-08. Selection sorted on skill alone would have bred
+    generation 4 from logit_midpoint: top of the board, confirmed on held-out
+    series, and -0.0123/contract over 20,840 fills against a 0.0052 detectable
+    effect. That is an established loss, not noise."""
+    scored = [_score("loser", 0.02, (0.01, 0.03)),
+              _score("ok", 0.001, (0.0005, 0.002))]
+    pol = SelectionPolicy(exclude=(), gate=_gate_from({"loser": GATE_FAIL}))
+    assert [s.candidate_id for s in pol.choose_parents(scored, 2)] == ["ok"]
+
+
+def test_an_unproven_candidate_is_still_eligible():
+    """Only proven losers are dropped. A selective candidate with a few hundred
+    fills has no verdict yet, and excluding it would cut off the only branch of
+    the search that has looked promising."""
+    scored = [_score("unproven", 0.0005, (0.0001, 0.001))]
+    pol = SelectionPolicy(gate=_gate_from({"unproven": GATE_UNPROVEN}))
+    assert [s.candidate_id for s in pol.choose_parents(scored, 2)] == ["unproven"]
+
+
+def test_a_gate_passer_outranks_a_higher_skill_candidate_without_a_verdict():
+    """Demonstrated money beats a better Brier score. INVARIANT #2 still orders
+    candidates within the same gate verdict."""
+    scored = [_score("high_skill", 0.02, (0.01, 0.03)),
+              _score("makes_money", 0.001, (0.0005, 0.002))]
+    pol = SelectionPolicy(gate=_gate_from({"makes_money": GATE_PASS}))
+    assert [s.candidate_id for s in pol.choose_parents(scored, 2)] == [
+        "makes_money", "high_skill"]
+
+
+def test_skill_still_orders_candidates_sharing_a_gate_verdict():
+    scored = [_score("a", 0.001, (0.0, 0.002)), _score("b", 0.003, (0.0, 0.004))]
+    pol = SelectionPolicy(gate=_gate_from({"a": GATE_PASS, "b": GATE_PASS}))
+    assert [s.candidate_id for s in pol.choose_parents(scored, 2)] == ["b", "a"]
+
+
+def test_the_loop_does_not_stall_when_every_candidate_lost_money():
+    """A generation where everything failed still has to breed from something.
+    Refusing to choose stalls the loop exactly where exploring differently
+    matters most."""
+    scored = [_score("a", 0.01, (0.0, 0.02)), _score("b", 0.02, (0.0, 0.03))]
+    pol = SelectionPolicy(gate=_gate_from({"a": GATE_FAIL, "b": GATE_FAIL}))
+    picked = pol.choose_parents(scored, 2)
+    assert [s.candidate_id for s in picked] == ["b", "a"]
+
+
+def test_selection_without_a_gate_is_unchanged():
+    """core/ must not require a gate; an experiment without one selects on
+    fitness alone, as this class always did."""
+    scored = [_score("a", 0.001, (0.0, 0.002)), _score("b", 0.003, (0.0, 0.004))]
+    assert [s.candidate_id for s in SelectionPolicy().choose_parents(scored, 2)] == ["b", "a"]
+
 
 def test_the_gate_is_evaluated_on_both_halves_not_just_selection():
     """A gate that holds only where the candidate was selected is the same trap

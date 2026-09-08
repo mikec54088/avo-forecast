@@ -169,6 +169,8 @@ def _evolve(args) -> None:
     # spends a generation optimising toward a known dead end.
     controls = [c.candidate_id for c in exp.seed_candidates()
                 if c.meta.get("role") == "control"]
+    # G2, decided 2026-09-08: a candidate proven to lose money is not a parent.
+    from experiments.kalshi_quant.experiment import pnl_verdict
     cdir = repo_root / "experiments" / args.experiment / "candidates"
     factory = BACKENDS[args.backend]
     backend = factory(args.model) if args.backend == "claude" else factory()
@@ -192,7 +194,8 @@ def _evolve(args) -> None:
                 "--force knowingly."
             )
         rec = run_generation(exp, backend, memory, cdir, repo_root, g, args.n,
-                             SelectionPolicy(exclude=controls), entries, history,
+                             SelectionPolicy(exclude=controls, gate=pnl_verdict),
+                             entries, history,
                              timeout_s=args.timeout, watch_paths=watch)
         print(f"  generation {g}: {rec.notes}")
         print(f"  checkpointed -> runs/{run_id}/gen{g:03d}.json")

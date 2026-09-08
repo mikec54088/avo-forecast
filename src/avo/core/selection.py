@@ -30,6 +30,16 @@ from dataclasses import dataclass
 
 from avo.core.types import Score
 
+# How an experiment's gate reports on a candidate. Core does not know what the
+# gate measures -- for kalshi_quant it is whether an edge survives crossing the
+# spread -- only that it comes back as one of three states, because two are not
+# enough. "Did not prove it made money" and "proved it lost money" call for
+# opposite handling: the first is a candidate still worth breeding from, the
+# second is a dead end whose descendants inherit the dead end.
+GATE_PASS = 1
+GATE_UNPROVEN = 0
+GATE_FAIL = -1
+
 CONFIRMATION_FRACTION = 0.25
 CONFIRMATION_SALT = "avo-confirmation-v1"
 
@@ -145,11 +155,20 @@ class SelectionPolicy:
         require_positive: bool = True,
         min_observations: int = 500,
         exclude: Sequence[str] = (),
+        gate: Callable[[Score], tuple[int, str]] | None = None,
     ):
         self.require_positive = require_positive
         self.min_observations = min_observations
         # Diagnostic instruments, never parents. See eligible().
         self.exclude = set(exclude)
+        # The experiment's gate, as a GATE_* verdict. Optional: an experiment
+        # without one selects on fitness alone, as this class always did.
+        self.gate = gate
+
+    def _gate(self, s: Score) -> int:
+        if self.gate is None:
+            return GATE_UNPROVEN
+        return self.gate(s)[0]
 
     def eligible(self, scored: Sequence[Score]) -> list[Score]:
         """Candidates fit to breed from.
@@ -174,6 +193,19 @@ class SelectionPolicy:
                 continue
             if self.require_positive and s.primary <= 0:
                 continue
+            # G2, decided 2026-09-08. A candidate the gate has PROVEN loses
+            # money is not a parent, however well it scores on fitness.
+            #
+            # Only proven losers are dropped, not everything short of proven
+            # profitable. Where the gate has power the evidence is decisive --
+            # the generation-1 sharpen family returns -0.5 to -2.7 cents per
+            # contract against a 0.4-0.6 cent detectable effect, so those are
+            # established losses, not noise -- but a selective candidate with a
+            # few hundred fills has no P&L verdict yet and excluding it would
+            # eliminate the only branch of the search that has ever looked
+            # promising. Require proof to reject, not proof to survive.
+            if self._gate(s) == GATE_FAIL:
+                continue
             out.append(s)
         return out
 
@@ -190,6 +222,15 @@ class SelectionPolicy:
             pool = [s for s in scored
                     if s.candidate_id not in self.exclude
                     and s.primary == s.primary
+                    and s.n_observations >= self.min_observations
+                    and self._gate(s) != GATE_FAIL]
+        if not pool:                      # everything proven to lose money
+            pool = [s for s in scored
+                    if s.candidate_id not in self.exclude
+                    and s.primary == s.primary
                     and s.n_observations >= self.min_observations]
-        pool.sort(key=lambda s: (-s.primary, -s.n_observations))
+        # Gate verdict leads, fitness breaks ties within it. A candidate that
+        # has demonstrated money is a better parent than one that merely scores
+        # well, and INVARIANT #2 still decides the order among equals.
+        pool.sort(key=lambda s: (-self._gate(s), -s.primary, -s.n_observations))
         return pool[:k]
