@@ -135,9 +135,29 @@ def paper_trade(
     mean = sum(pnl) / len(pnl)
     k = len(by_series)
     if k > 1:
-        sm = [sum(v) / len(v) for v in by_series.values()]
-        m = sum(sm) / k
-        se = (sum((x - m) ** 2 for x in sm) / (k - 1) / k) ** 0.5
+        # Cluster-robust standard error for the POOLED mean above.
+        #
+        # The previous version took the unweighted mean of per-series means and
+        # reported ITS standard error alongside a fill-weighted point estimate.
+        # Those describe different quantities and on real data they disagree in
+        # sign: measured 2026-09-08, persistent_quote_favourite's pooled mean was
+        # +0.0149 while the unweighted mean of its series means was -0.0121.
+        # `mean +/- 1.96 * se` was therefore not an interval for either one.
+        #
+        # It was also badly inflated, because equal weight per series lets a
+        # singleton dominate: 43 of that candidate's 92 series held exactly one
+        # fill, and a single fill's "series mean" is ~+/-0.5. The old estimator
+        # ran 1.6-2.0x wide, which is not conservatism, it is noise. It hid
+        # unchurned_favourite, whose interval is [-0.0126,+0.0862] under the old
+        # estimator and [+0.0093,+0.0643] under this one.
+        #
+        # This is the standard Liang-Zeger form for a mean: sum the residuals
+        # WITHIN each series, square the series totals, and correct by k/(k-1).
+        # Series contribute in proportion to how much they were traded, and
+        # correlation inside a series is still fully absorbed -- which was the
+        # point of clustering in the first place.
+        ss = sum((sum(v) - len(v) * mean) ** 2 for v in by_series.values())
+        se = (ss * k / (k - 1)) ** 0.5 / len(pnl)
     else:
         se = float("nan")
     return {

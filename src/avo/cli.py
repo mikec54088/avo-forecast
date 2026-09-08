@@ -131,19 +131,30 @@ def _rank(args) -> None:
     """Score every candidate, then confirm on series selection never sees."""
     from avo.core.loop import rank_and_confirm
     from avo.core.selection import CONFIRMATION_FRACTION, SelectionPolicy
+    from experiments.kalshi_quant.experiment import passes_pnl_gate
 
     exp = registry.load(args.experiment)
     entries, history = _scoring_inputs()
-    _, verdicts = rank_and_confirm(exp, entries, history, SelectionPolicy())
+    _, verdicts = rank_and_confirm(exp, entries, history, SelectionPolicy(),
+                                   gate=passes_pnl_gate)
     print(f"{len(entries):,} observations; "
           f"{CONFIRMATION_FRACTION:.0%} of series held back for confirmation\n")
-    print(f"{'candidate':<26}{'selection':>11}{'confirm':>10}  verdict")
+    print(f"{'candidate':<26}{'selection':>11}{'confirm':>10}  {'P&L sel':>9}"
+          f"{'P&L conf':>9}  verdict")
     for v in verdicts:
         c = v.confirmation.primary if v.confirmation else float("nan")
+        ps = v.selection.secondary.get("pnl_per_contract", float("nan"))
+        pc = (v.confirmation.secondary.get("pnl_per_contract", float("nan"))
+              if v.confirmation else float("nan"))
+        flag = "  <-- GATE BOTH SIDES" if (v.gate_selection and v.gate_confirmed) else ""
         print(f"{v.candidate_id:<26}{v.selection.primary:>+11.4f}{c:>+10.4f}  "
-              f"{'CONFIRMED' if v.confirmed else v.note}")
+              f"{ps:>+9.4f}{pc:>+9.4f}  "
+              f"{'CONFIRMED' if v.confirmed else v.note}{flag}")
     n = sum(v.confirmed for v in verdicts)
-    print(f"\n{n}/{len(verdicts)} confirmed on held-out series")
+    g = sum(v.gate_selection and v.gate_confirmed for v in verdicts)
+    print(f"\n{n}/{len(verdicts)} confirmed on held-out series (skill)")
+    print(f"{g}/{len(verdicts)} pass the P&L gate on BOTH selection and "
+          f"confirmation series")
 
 
 def _evolve(args) -> None:

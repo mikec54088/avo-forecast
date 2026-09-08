@@ -25,7 +25,7 @@ Kalshi's top 20 series are over half of all observations.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from avo.core.types import Score
@@ -60,13 +60,24 @@ def split_groups(groups: Sequence[str]) -> tuple[list[str], list[str]]:
 
 @dataclass(frozen=True)
 class Verdict:
-    """What a candidate earned, and whether it survived confirmation."""
+    """What a candidate earned, and whether it survived confirmation.
+
+    `confirmed` is about SKILL, because INVARIANT #2 makes Brier skill the
+    fitness. `gate_confirmed` reports whether the experiment's own gate -- for
+    kalshi_quant, whether the edge survives crossing the spread -- also holds on
+    series selection never saw. The two are reported side by side rather than
+    merged: on this data they disagree constantly, and collapsing them into one
+    boolean is how a high-skill money-loser gets promoted.
+    """
 
     candidate_id: str
     selection: Score
     confirmation: Score | None = None
     confirmed: bool = False
     note: str = ""
+    gate_selection: bool = False
+    gate_confirmed: bool = False
+    gate_note: str = ""
 
     def __str__(self) -> str:
         s = f"{self.candidate_id:<26} sel {self.selection.primary:+.4f}"
@@ -76,7 +87,10 @@ class Verdict:
 
 
 def confirm(
-    selection: Score, confirmation: Score, min_observations: int = 500
+    selection: Score,
+    confirmation: Score,
+    min_observations: int = 500,
+    gate: Callable[[Score], tuple[bool, str]] | None = None,
 ) -> Verdict:
     """Does a candidate that looked good on selection data hold up off it?
 
@@ -90,20 +104,31 @@ def confirm(
     later generation, while a false negative costs one candidate.
     """
     cid = selection.candidate_id
+    # The experiment's gate, evaluated on BOTH halves. A gate that holds only
+    # where the candidate was selected is the same trap the skill split exists
+    # to catch, one metric over.
+    g_sel, g_conf, g_note = False, False, ""
+    if gate is not None:
+        g_sel, sel_why = gate(selection)
+        g_conf, conf_why = gate(confirmation)
+        g_note = f"sel {sel_why}; conf {conf_why}"
+
+    def _v(confirmed: bool, note: str) -> Verdict:
+        return Verdict(cid, selection, confirmation, confirmed, note,
+                       g_sel, g_conf, g_note)
+
     if confirmation.n_observations < min_observations:
-        return Verdict(cid, selection, confirmation, False,
-                       f"too few confirmation observations "
-                       f"({confirmation.n_observations} < {min_observations})")
+        return _v(False, f"too few confirmation observations "
+                         f"({confirmation.n_observations} < {min_observations})")
     lo, hi = confirmation.primary_ci
     if lo != lo or hi != hi:
-        return Verdict(cid, selection, confirmation, False, "no confirmation interval")
+        return _v(False, "no confirmation interval")
     if selection.primary > 0 and lo > 0:
-        return Verdict(cid, selection, confirmation, True, "")
+        return _v(True, "")
     if selection.primary < 0 and hi < 0:
-        return Verdict(cid, selection, confirmation, True, "")
-    return Verdict(cid, selection, confirmation, False,
-                   f"not confirmed: [{lo:+.4f},{hi:+.4f}] spans zero "
-                   "or disagrees with selection")
+        return _v(True, "")
+    return _v(False, f"not confirmed: [{lo:+.4f},{hi:+.4f}] spans zero "
+                     "or disagrees with selection")
 
 
 class SelectionPolicy:

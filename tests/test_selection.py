@@ -53,6 +53,42 @@ def test_a_series_is_never_split_across_both_halves():
 
 # ---------------------------------------------------------------- confirming
 
+def test_the_gate_is_evaluated_on_both_halves_not_just_selection():
+    """A gate that holds only where the candidate was selected is the same trap
+    the skill split exists to catch, one metric over. Added 2026-09-08 after the
+    P&L gate turned out to have no confirmation half at all."""
+    seen = []
+
+    def gate(score):
+        seen.append(score.candidate_id)
+        # passes on selection, fails on the held-out half
+        return (score.n_observations > 1000, "ok" if score.n_observations > 1000
+                else "no")
+
+    v = confirm(_score("c", 0.01, (0.005, 0.02), n=5000),
+                _score("c", 0.01, (0.005, 0.02), n=800),
+                min_observations=500, gate=gate)
+    assert len(seen) == 2, "the gate must be run on both subsets"
+    assert v.gate_selection and not v.gate_confirmed
+    assert "sel ok" in v.gate_note and "conf no" in v.gate_note
+
+
+def test_gate_and_skill_verdicts_are_reported_separately():
+    """INVARIANT #2 keeps skill as the fitness, so `confirmed` stays about skill.
+    Merging the two booleans is how a high-skill money-loser gets promoted."""
+    v = confirm(_score("c", 0.01, (0.005, 0.02)),
+                _score("c", 0.01, (0.005, 0.02)),
+                gate=lambda s: (False, "loses money"))
+    assert v.confirmed, "skill confirmation is unaffected by the gate"
+    assert not v.gate_confirmed
+
+
+def test_confirm_without_a_gate_is_unchanged():
+    """core/ must not require a gate; experiments that have none still confirm."""
+    v = confirm(_score("c", 0.01, (0.005, 0.02)), _score("c", 0.01, (0.005, 0.02)))
+    assert v.confirmed and not v.gate_selection and not v.gate_confirmed
+
+
 def test_confirms_only_when_the_held_out_interval_excludes_zero():
     sel = _score("c", 0.02, (0.01, 0.03))
     assert confirm(sel, _score("c", 0.018, (0.008, 0.028))).confirmed

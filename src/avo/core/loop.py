@@ -58,7 +58,7 @@ def score_all(
 
 
 def rank_and_confirm(
-    experiment, entries, history, policy: SelectionPolicy
+    experiment, entries, history, policy: SelectionPolicy, gate=None
 ) -> tuple[list[Score], list[Verdict]]:
     """Rank on selection series; confirm on the held-out ones.
 
@@ -70,7 +70,7 @@ def rank_and_confirm(
     sel = score_all(experiment, entries, history, subset="selection")
     conf = {s.candidate_id: s
             for s in score_all(experiment, entries, history, subset="confirmation")}
-    verdicts = [confirm(s, conf[s.candidate_id])
+    verdicts = [confirm(s, conf[s.candidate_id], gate=gate)
                 for s in sel if s.candidate_id in conf]
     verdicts.sort(key=lambda v: -v.selection.primary)
     return sel, verdicts

@@ -242,6 +242,72 @@ def _score_with(secondary: dict) -> Score:
                  n_observations=1000, secondary=secondary)
 
 
+def _pnl_se(returns_by_series):
+    """Run paper_trade's SE path over synthetic per-series returns."""
+    pnl = [x for v in returns_by_series for x in v]
+    mean = sum(pnl) / len(pnl)
+    k = len(returns_by_series)
+    ss = sum((sum(v) - len(v) * mean) ** 2 for v in returns_by_series)
+    return mean, (ss * k / (k - 1)) ** 0.5 / len(pnl)
+
+
+def test_pnl_se_reduces_to_the_iid_error_when_every_fill_is_its_own_series():
+    """With one fill per cluster there is no within-cluster correlation left to
+    absorb, so the cluster-robust error must collapse onto the ordinary standard
+    error of the mean. An estimator that fails this is not measuring the mean."""
+    import statistics
+    xs = [0.4, -0.6, 0.1, 0.9, -0.3, 0.55, -0.15, 0.2]
+    mean, se = _pnl_se([[x] for x in xs])
+    n = len(xs)
+    iid = statistics.stdev(xs) / n**0.5          # uses the same 1/(n-1) correction
+    assert mean == pytest.approx(sum(xs) / n)
+    assert se == pytest.approx(iid, rel=1e-12)
+
+
+def test_pnl_se_describes_the_same_quantity_as_the_point_estimate():
+    """The defect fixed on 2026-09-08: the reported mean was pooled over FILLS
+    while the reported error came from the unweighted mean of SERIES means. On
+    real data the two disagreed in sign -- persistent_quote_favourite's pooled
+    mean was +0.0149 against -0.0121 unweighted -- so `mean +/- 1.96*se` was an
+    interval for neither. One big series and many singletons reproduces it."""
+    groups = [[0.05] * 100] + [[-0.30]] * 10
+    pooled = sum(x for v in groups for x in v) / sum(len(v) for v in groups)
+    unweighted = sum(sum(v) / len(v) for v in groups) / len(groups)
+    assert pooled > 0 > unweighted, "fixture must reproduce the sign disagreement"
+
+    mean, se = _pnl_se(groups)
+    assert mean == pytest.approx(pooled), "the point estimate is the pooled mean"
+    assert mean != pytest.approx(unweighted)
+    # The interval must contain the estimate it is attached to. Under the old
+    # pairing it did not even describe the same sign of effect.
+    assert mean - 1.96 * se < mean < mean + 1.96 * se
+    assert not (mean - 1.96 * se <= unweighted <= mean + 1.96 * se), (
+        "the unweighted mean lies outside this interval, which is the point: "
+        "pairing it with the pooled estimate described two different things")
+
+
+def test_pnl_se_is_not_inflated_by_singleton_series():
+    """43 of persistent_quote_favourite's 92 series held exactly one fill, and a
+    single fill's 'series mean' is ~+/-0.5 regardless of how little it was
+    traded. Weighting those equally with a 40-fill series is what ran the old
+    interval 1.6-2.0x wide."""
+    import random
+    rng = random.Random(0)
+    dense = [[rng.gauss(0.02, 0.1) for _ in range(50)] for _ in range(4)]
+    singles = [[0.5], [-0.5]] * 10
+    groups = dense + singles
+
+    _, se_new = _pnl_se(groups)
+    sm = [sum(v) / len(v) for v in groups]
+    m = sum(sm) / len(groups)
+    se_old = (sum((x - m) ** 2 for x in sm) / (len(groups) - 1) / len(groups)) ** 0.5
+
+    # Singletons are 20 of 24 series but only 20 of 220 fills. Equal-weighting
+    # them is what inflated the shipped estimator; weighting by how much each
+    # series was actually traded is what fixes it.
+    assert se_new < se_old / 2
+
+
 def test_pnl_gate_passes_only_on_a_clustered_interval_above_zero():
     """Requiring the mean alone would pass noise. On 2026-08-31 the 20-90 min
     band had a positive mean whose series-clustered interval spanned zero."""
