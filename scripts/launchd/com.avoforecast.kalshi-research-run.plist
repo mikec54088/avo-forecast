@@ -9,6 +9,10 @@
     <array>
         <string>/Users/hermesagent/miniconda3/bin/uv</string>
         <string>run</string>
+        <string>python</string>
+        <string>-m</string>
+        <string>experiments.kalshi_research.runner</string>
+        <string>run</string>
         <string>--source</string>
         <string>full</string>
         <string>--researcher</string>
@@ -18,7 +22,7 @@
         <string>--final-hours</string>
         <string>1</string>
         <string>--max-markets</string>
-        <string>3000</string>
+        <string>50000</string>
     </array>
 
     <key>WorkingDirectory</key>
