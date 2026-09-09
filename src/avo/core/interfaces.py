@@ -26,6 +26,15 @@ class Experiment(Protocol):
         """Evaluate. MUST respect avo.core.holdout for anything time-based."""
         ...
 
+    def scoring_inputs(self) -> tuple[Any, Any]:
+        """(entries, history) to pass to score() for a whole ranking pass.
+
+        Whatever the experiment's observations are: replayed snapshots for
+        kalshi_quant, a forward forecast log for kalshi_research. Core only
+        threads them through; it never looks inside (INVARIANT #3).
+        """
+        ...
+
     def seed_candidates(self) -> Sequence[Candidate]:
         """Controls / starting points. Never empty — the agent needs valid state."""
         ...

@@ -199,6 +199,13 @@ class KalshiQuantExperiment:
             raise TypeError(f"{candidate.module_path} missing MANIFEST dict")
         return mod
 
+    def scoring_inputs(self) -> tuple[list[Entry], SeriesHistory]:
+        """Load the observation set once for a whole ranking pass."""
+        entries = load_entries()
+        if not entries:
+            raise SystemExit("no observations yet; capture needs to run first")
+        return entries, SeriesHistory(entries)
+
     def score(
         self,
         candidate: Candidate,

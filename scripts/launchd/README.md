@@ -20,6 +20,7 @@ path, and both log paths) before loading. Find `uv` with `command -v uv`.
     cp com.avoforecast.kalshi-*.plist ~/Library/LaunchAgents/
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.avoforecast.kalshi-snapshot.plist
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.avoforecast.kalshi-settle.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.avoforecast.kalshi-research-run.plist
 
 ## Verify
 
@@ -27,6 +28,8 @@ Never infer success from the plist being loaded — check that data lands.
 
     launchctl list | grep avoforecast        # 2nd column is last exit status
     ls data/kalshi_quant/snapshots/date=*/   # a new file every 15 min
+    ls data/kalshi_research/forecasts/date=*/  # research runner: a file per pass that forecast anything
+    tail data/research.log
     tail -f data/capture.log
 
 ## Reload after editing

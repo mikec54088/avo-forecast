@@ -119,12 +119,10 @@ def _generate(args) -> None:
     print("\n" + summarise(attempts))
 
 
-def _scoring_inputs():
-    from experiments.kalshi_quant.observations import SeriesHistory, load_entries
-    entries = load_entries()
-    if not entries:
-        raise SystemExit("no observations yet; capture needs to run first")
-    return entries, SeriesHistory(entries)
+def _scoring_inputs(exp):
+    """(entries, history) as the experiment defines them. kalshi_quant replays
+    captured snapshots; kalshi_research reads its forward forecast log."""
+    return exp.scoring_inputs()
 
 
 def _rank(args) -> None:
@@ -134,7 +132,7 @@ def _rank(args) -> None:
     from experiments.kalshi_quant.experiment import passes_pnl_gate
 
     exp = registry.load(args.experiment)
-    entries, history = _scoring_inputs()
+    entries, history = _scoring_inputs(exp)
     _, verdicts = rank_and_confirm(exp, entries, history, SelectionPolicy(),
                                    gate=passes_pnl_gate)
     print(f"{len(entries):,} observations; "
@@ -177,7 +175,7 @@ def _evolve(args) -> None:
 
     run_id = args.run_id or new_run_id(args.experiment)
     memory = RunMemory(run_id, repo_root / "runs")
-    entries, history = _scoring_inputs()
+    entries, history = _scoring_inputs(exp)
     watch = [Path.home() / ".claude" / "projects"]
 
     print(f"run {run_id}\nbackend {backend.name}\n{len(entries):,} observations")

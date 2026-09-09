@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.avoforecast.kalshi-research-run</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/hermesagent/miniconda3/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>-m</string>
+        <string>experiments.kalshi_research.runner</string>
+        <string>run</string>
+        <string>--researcher</string>
+        <string>claude</string>
+        <string>--max-close-hours</string>
+        <string>1</string>
+        <string>--max-markets</string>
+        <string>300</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/hermesagent/development/avo-forecast</string>
+
+    <!-- The forward pass for kalshi_research (docs/PLAN-2026-09-09.md, B4).
+         Runs five minutes after each near-pass snapshot so it reads a quote
+         at most ~5 minutes old. Reads the snapshot from disk: zero API calls.
+         Research cost is incurred only by candidates that call
+         context.research; the control never does, so with the control alone
+         this spends nothing and simply starts the log's clock. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Minute</key><integer>5</integer></dict>
+        <dict><key>Minute</key><integer>20</integer></dict>
+        <dict><key>Minute</key><integer>35</integer></dict>
+        <dict><key>Minute</key><integer>50</integer></dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/research.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/research.log</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>

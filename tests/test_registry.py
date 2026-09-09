@@ -7,8 +7,9 @@ def test_experiments_are_discoverable():
     assert "kalshi_research" in names
 
 
-def test_planned_experiments_are_marked():
-    assert registry.config("kalshi_research")["experiment"]["status"] == "planned"
+def test_kalshi_research_is_active():
+    """Promoted from "planned" on 2026-09-09 (G5, authorized by the human)."""
+    assert registry.config("kalshi_research")["experiment"]["status"] == "active"
 
 
 def test_seed_candidates_load():

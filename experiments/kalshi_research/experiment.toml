@@ -1,7 +1,7 @@
 [experiment]
 name = "kalshi_research"
 entrypoint = "experiments.kalshi_research.experiment"
-status = "planned"          # DO NOT BUILD YET — see docs/EXPERIMENTS.md
+status = "active"           # G5 authorized by the human 2026-09-09; docs/PLAN-2026-09-09.md
 description = """
 Same domain and same fitness function as kalshi-quant, but a candidate is an
 AGENT, not a function: it may search news, read sources, and reason per market
@@ -14,6 +14,19 @@ function with kalshi-quant is the point: it makes the two directly comparable,
 and that comparison ("does research-time buy calibration?") is the actual
 research question.
 
-Blocked on: kalshi-quant completing generation 1, so there is a real baseline
-to compare against.
+Unblocked 2026-09-09: kalshi_quant has three generations and a definitive
+null on the book alone (0/39 pass the P&L gate; generation 1 refuted at
+0.4-0.6c resolution). Evaluated FORWARD ONLY from a live forecast log --
+replay would leak outcomes through the search box. See forecast_log.py.
 """
+
+[fitness]
+primary = "brier_skill_vs_market"
+secondary = ["paper_pnl", "research_calls_per_market"]
+
+[cadence]
+# forward-only: a generation is judged when its forecasts have resolved
+runner_minutes = 15
+max_close_hours = 1
+max_markets_per_pass = 300
+research_budget_per_market = 3
