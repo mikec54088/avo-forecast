@@ -9,34 +9,32 @@
     <array>
         <string>/Users/hermesagent/miniconda3/bin/uv</string>
         <string>run</string>
-        <string>python</string>
-        <string>-m</string>
-        <string>experiments.kalshi_research.runner</string>
-        <string>run</string>
+        <string>--source</string>
+        <string>full</string>
         <string>--researcher</string>
         <string>claude</string>
         <string>--max-close-hours</string>
+        <string>120</string>
+        <string>--final-hours</string>
         <string>1</string>
         <string>--max-markets</string>
-        <string>300</string>
+        <string>3000</string>
     </array>
 
     <key>WorkingDirectory</key>
     <string>/Users/hermesagent/development/avo-forecast</string>
 
     <!-- The forward pass for kalshi_research (docs/PLAN-2026-09-09.md, B4).
-         Runs five minutes after each near-pass snapshot so it reads a quote
-         at most ~5 minutes old. Reads the snapshot from disk: zero API calls.
-         Research cost is incurred only by candidates that call
-         context.research; the control never does, so with the control alone
-         this spends nothing and simply starts the log's clock. -->
+         Reads the hourly FULL snapshot (lands ~:40) at :50, so quotes are
+         <=10 min old at the pass and <=60 min old at capture. The full pass,
+         not the near one: major-league game markets carry a close_time 2-3
+         days after the game and never enter the <=24h near window (measured
+         2026-09-09: 0 of 1,505 near-pass rows). Zero API calls; research
+         cost is incurred only by candidates that call context.research. The
+         control never does, so with the control alone this spends nothing
+         and simply starts the log's clock. -->
     <key>StartCalendarInterval</key>
-    <array>
-        <dict><key>Minute</key><integer>5</integer></dict>
-        <dict><key>Minute</key><integer>20</integer></dict>
-        <dict><key>Minute</key><integer>35</integer></dict>
-        <dict><key>Minute</key><integer>50</integer></dict>
-    </array>
+    <dict><key>Minute</key><integer>50</integer></dict>
 
     <key>StandardOutPath</key>
     <string>/Users/hermesagent/development/avo-forecast/data/research.log</string>

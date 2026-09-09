@@ -111,6 +111,110 @@ def test_a_raising_candidate_is_logged_as_the_market_not_dropped(tmp_path):
     assert df["error"].str.contains("boom").all()
 
 
+def test_an_abstaining_candidate_is_deferred_until_the_final_window(tmp_path):
+    """Game markets close 2-3 days after the game. Logging an early abstention
+    as the one forecast would make every research candidate read as the
+    control; it is asked again on later passes instead."""
+    early = _snapshot(3, close_in_h=48.0)
+    _, st = run_pass(NullResearcher(), early, now=NOW, root=tmp_path, experiment=EXP,
+                     final_hours=1.0)
+    n_cands = len(EXP.seed_candidates())
+    assert st["asked"] == 3 * n_cands and st["deferred"] == 3 * n_cands
+    assert st["forecasts"] == 0 and forecast_log.read(tmp_path).empty
+    late = _snapshot(3, close_in_h=0.5)
+    _, st = run_pass(NullResearcher(), late, now=NOW, root=tmp_path, experiment=EXP)
+    assert st["forecasts"] == 3 * n_cands and st["deferred"] == 0
+
+
+def test_a_candidate_that_acts_early_is_done_and_not_asked_again(tmp_path):
+    from avo.core.types import Candidate
+
+    class Acts:
+        MANIFEST: ClassVar[dict] = {"candidate_id": "acts"}
+        def forecast(self, m, c):
+            return min(m.implied_prob + 0.05, 0.99)
+
+    class FakeExp:
+        def seed_candidates(self):
+            return [Candidate("acts", "kalshi_research", 0, None, NOW, "x", "")]
+        def load_candidate(self, c):
+            return Acts()
+
+    early = _snapshot(2, close_in_h=48.0)
+    _, st = run_pass(NullResearcher(), early, now=NOW, root=tmp_path, experiment=FakeExp())
+    assert st["forecasts"] == 2 and st["acted"] == 2 and st["deferred"] == 0
+    _, st = run_pass(NullResearcher(), early, now=NOW + timedelta(hours=1),
+                     root=tmp_path, experiment=FakeExp())
+    assert st["skipped_seen"] == 2 and st["forecasts"] == 0
+
+
+def test_spending_research_counts_as_acting_even_if_the_forecast_is_the_market(tmp_path):
+    """Research spent is a decision made; the log must hold it exactly once."""
+    from avo.core.types import Candidate
+
+    class Spends:
+        MANIFEST: ClassVar[dict] = {"candidate_id": "spends"}
+        def forecast(self, m, c):
+            c.research("anything")
+            return m.implied_prob
+
+    class FakeExp:
+        def seed_candidates(self):
+            return [Candidate("spends", "kalshi_research", 0, None, NOW, "x", "")]
+        def load_candidate(self, c):
+            return Spends()
+
+    stub = StubResearcher()
+    _, st = run_pass(stub, _snapshot(2, close_in_h=48.0), now=NOW, root=tmp_path,
+                     experiment=FakeExp())
+    assert st["forecasts"] == 2 and st["research_calls"] == 2 and stub.calls == 2
+    df = forecast_log.read(tmp_path)
+    assert (df["research_calls"] == 1).all()
+
+
+def test_latest_snapshot_distinguishes_full_from_near(tmp_path):
+    from experiments.kalshi_research.runner import latest_snapshot
+    d = tmp_path / "date=2026-09-09"; d.mkdir()
+    (d / "100000.parquet").write_bytes(b"")
+    (d / "101500-near.parquet").write_bytes(b"")
+    assert latest_snapshot("full", tmp_path).name == "100000.parquet"
+    assert latest_snapshot("near", tmp_path).name == "101500-near.parquet"
+
+
+# ------------------------------------------------------ the staged candidate
+
+def test_staged_candidate_gates_research_on_the_game_date(tmp_path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "inf", REPO / "experiments/kalshi_research/staging/injury_news_favourite.py")
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    assert mod.game_date("KXMLBGAME-26SEP081940PITCWS-PIT") == datetime(2026, 9, 8, tzinfo=timezone.utc)
+    assert mod.game_date("KXNCAAFGAME-26SEP19FIUFAU-FIU") == datetime(2026, 9, 19, tzinfo=timezone.utc)
+    assert mod.game_date("KXBTCD-26SEP0912") is not None    # date parses; series gate rejects it
+    from experiments.kalshi_quant.types import MarketSnapshot
+    def mk(ticker, series, mid=0.70, spread=0.02, title="Pittsburgh wins"):
+        return MarketSnapshot(ticker, "E", series, title, NOW, NOW + timedelta(hours=60),
+                              mid - spread / 2, mid + spread / 2, None, 100.0, 50.0)
+    m = mk("KXMLBGAME-26SEP091940PITCWS-PIT", "KXMLBGAME")
+    on_day = datetime(2026, 9, 9, 18, 0, tzinfo=timezone.utc)
+    day_before = datetime(2026, 9, 8, 18, 0, tzinfo=timezone.utc)
+    # the hash sample decides the final bit; test the gates that precede it
+    assert not mod.wants_research(m, day_before)
+    assert not mod.wants_research(mk("KXBTCD-26SEP0912-T1", "KXBTCD"), on_day)
+    assert not mod.wants_research(mk("KXMLBGAME-26SEP091940PITCWS-TIE", "KXMLBGAME", title="Tie is the result"), on_day)
+    assert not mod.wants_research(mk("KXMLBGAME-26SEP091940PITCWS-PIT", "KXMLBGAME", mid=0.30), on_day)
+    assert not mod.wants_research(mk("KXMLBGAME-26SEP091940PITCWS-PIT", "KXMLBGAME", spread=0.10), on_day)
+    # and a market that passes every gate researches exactly once, within budget
+    sampled = next(t for t in (f"KXMLBGAME-26SEP09{i:04d}AAABBB-AAA" for i in range(1000))
+                   if mod.wants_research(mk(t, "KXMLBGAME"), on_day))
+    stub = StubResearcher(default="Starting pitcher scratched with injury")
+    ctx = ResearchContext(now=on_day, researcher=stub)
+    p = mod.forecast(mk(sampled, "KXMLBGAME"), ctx)
+    assert stub.calls == 1 and p == pytest.approx(0.70 - 0.04)
+    ctx2 = ResearchContext(now=on_day, researcher=StubResearcher())   # NOTHING FOUND
+    assert mod.forecast(mk(sampled, "KXMLBGAME"), ctx2) == pytest.approx(0.70)
+
+
 # ----------------------------------------------------------------- scoring
 
 def _resolutions(tmp_path, outcomes: dict[str, tuple[datetime, int]]):

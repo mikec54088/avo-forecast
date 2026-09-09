@@ -7,11 +7,29 @@ against it; settle() is driven by what appears in snapshots, so every market
 forecast here is guaranteed to have its resolution recorded without any new
 API surface; and it costs zero requests.
 
-Each (candidate, ticker) is forecast AT MOST ONCE, the first time the market is
-inside `max_close_hours` of its close. Research is spent once per market, and
-the forecast that is scored is that one. That is a different entry policy from
-kalshi_quant's "last snapshot before resolution within 60 min", and it must be,
-because a research candidate cannot be re-run later against an earlier quote.
+Each (candidate, ticker) is scored on ONE forecast. The rule for which one:
+
+  * a candidate that ACTS (returns something other than the market) or SPENDS
+    research is done with that market at that moment -- the forecast is logged
+    and it is never asked again;
+  * a candidate that abstains is asked again on later passes, and its
+    abstention is logged once, when the market is inside `final_hours` of its
+    close, so that skill and P&L are computed over the same population as an
+    acting candidate's.
+
+That rule exists because of where the markets are. Measured 2026-09-09 over a
+Sunday-Tuesday: major-league game markets (KXNCAAFGAME, KXMLBGAME, KXMLSGAME,
+KXEPLGAME ...) carry a close_time two to three DAYS after the game and never
+enter the near-pass (<=24h) window at all -- 0 of 1,505 rows in a typical near
+pass, 24 obscure-league game markets in three days. They arrive only through
+the hourly full pass. So the runner reads the full pass with a wide selection
+window, and a research candidate decides for itself when the game is close
+enough to be worth spending on. Logging its early abstention as its one
+forecast would have made every research candidate look like the control.
+
+It is a different entry policy from kalshi_quant's "last snapshot before
+resolution within 60 min", and it must be: a research candidate cannot be
+re-run later against an earlier quote.
 
 Runs under launchd like capture does (scripts/launchd/); cron is TCC-blocked on
 this Mac and fails silently. Takes a lock so passes never overlap.
@@ -61,9 +79,17 @@ class _Lock:
         self.path.unlink(missing_ok=True)
 
 
-def latest_near_snapshot(root: Path = SNAPSHOT_ROOT) -> Path | None:
-    files = glob.glob(str(root / "date=*" / "*-near.parquet"))
+def latest_snapshot(kind: str = "full", root: Path = SNAPSHOT_ROOT) -> Path | None:
+    """Most recent snapshot file. "near" = the 15-minute <=24h pass (quotes
+    <=15 min old, but no major-league game markets); "full" = the hourly
+    unbounded pass (quotes <=60 min old, everything)."""
+    files = glob.glob(str(root / "date=*" / "*.parquet"))
+    files = [f for f in files if f.endswith("-near.parquet") == (kind == "near")]
     return Path(max(files, key=os.path.getmtime)) if files else None
+
+
+def latest_near_snapshot(root: Path = SNAPSHOT_ROOT) -> Path | None:
+    return latest_snapshot("near", root)
 
 
 def select_markets(
@@ -94,13 +120,15 @@ def run_pass(
     researcher: Researcher,
     snapshot: pd.DataFrame,
     now: datetime | None = None,
-    max_close_hours: float = 1.0,
-    max_markets: int = 300,
+    max_close_hours: float = 120.0,
+    max_markets: int = 3000,
     budget: int = DEFAULT_BUDGET,
     root: Path | None = None,
     experiment: Any = None,
+    final_hours: float = 1.0,
 ) -> tuple[Path | None, dict[str, int]]:
-    """Forecast every selected market with every seed candidate; append."""
+    """Ask every not-yet-done candidate about every selected market; log the
+    ones that are done after this pass (see the module docstring)."""
     from avo.core import registry
 
     now = now or datetime.now(timezone.utc)
@@ -115,12 +143,13 @@ def run_pass(
 
     already = forecast_log.seen(root)
     chosen = select_markets(snapshot, now, max_close_hours, max_markets)
-    stats = {"markets": len(chosen), "forecasts": 0, "skipped_seen": 0,
-             "errors": 0, "research_calls": 0}
+    stats = {"markets": len(chosen), "asked": 0, "forecasts": 0, "acted": 0,
+             "deferred": 0, "skipped_seen": 0, "errors": 0, "research_calls": 0}
     rows: list[dict[str, object]] = []
 
     for r in chosen.itertuples(index=False):
         m = _row_to_snapshot(r)
+        hours_left = (m.close_time - now).total_seconds() / 3600.0
         sibs = None
         for c, mod in cands:
             if (c.candidate_id, m.ticker) in already:
@@ -137,9 +166,15 @@ def run_pass(
                     err, p = f"forecast {p!r} outside [0,1]", m.implied_prob
             except Exception as exc:  # noqa: BLE001
                 err, p = f"raised {exc!r}"[:200], m.implied_prob
-            stats["forecasts"] += 1
-            stats["errors"] += bool(err)
+            stats["asked"] += 1
             stats["research_calls"] += ctx.calls
+            acted = abs(p - m.implied_prob) > 1e-12 or ctx.calls > 0 or bool(err)
+            if not acted and hours_left > final_hours:
+                stats["deferred"] += 1      # ask again next pass
+                continue
+            stats["forecasts"] += 1
+            stats["acted"] += acted
+            stats["errors"] += bool(err)
             rows.append(forecast_log.row(
                 c.candidate_id, m, p, now, ctx.calls,
                 ctx.elapsed_s or (time.monotonic() - t0), researcher.name, err))
@@ -153,28 +188,38 @@ def main() -> None:
     ap.add_argument("mode", choices=["run"])
     ap.add_argument("--researcher", default="claude", choices=["claude", "null"])
     ap.add_argument("--model", default=None)
-    ap.add_argument("--max-close-hours", type=float, default=1.0)
-    ap.add_argument("--max-markets", type=int, default=300)
+    ap.add_argument("--source", default="full", choices=["full", "near"],
+                    help="which capture pass to read; full is the only one that "
+                         "carries major-league game markets")
+    ap.add_argument("--max-close-hours", type=float, default=120.0,
+                    help="selection window; game markets close 2-3 days after the game")
+    ap.add_argument("--final-hours", type=float, default=1.0,
+                    help="an abstention is logged once inside this many hours of close")
+    ap.add_argument("--max-markets", type=int, default=3000)
     ap.add_argument("--budget", type=int, default=DEFAULT_BUDGET)
     args = ap.parse_args()
 
-    snap = latest_near_snapshot()
+    snap = latest_snapshot(args.source)
     if snap is None:
-        raise SystemExit("no near-pass snapshot found; capture must be running")
+        raise SystemExit(f"no {args.source} snapshot found; capture must be running")
     age_min = (time.time() - snap.stat().st_mtime) / 60
-    if age_min > 45:
-        raise SystemExit(f"latest near snapshot is {age_min:.0f} min old; capture may have stopped")
+    limit = 45 if args.source == "near" else 100
+    if age_min > limit:
+        raise SystemExit(f"latest {args.source} snapshot is {age_min:.0f} min old; "
+                         "capture may have stopped")
 
     with _Lock(forecast_log.DATA_ROOT):
         started = datetime.now(timezone.utc)
         df = pd.read_parquet(snap)
         path, st = run_pass(make(args.researcher, args.model), df,
                             max_close_hours=args.max_close_hours,
-                            max_markets=args.max_markets, budget=args.budget)
+                            max_markets=args.max_markets, budget=args.budget,
+                            final_hours=args.final_hours)
         elapsed = (datetime.now(timezone.utc) - started).total_seconds()
-        print(f"[<={args.max_close_hours:g}h] {st['markets']} markets from {snap.name} "
-              f"({age_min:.0f} min old); {st['forecasts']} forecasts, "
-              f"{st['skipped_seen']} already seen, {st['errors']} errors, "
+        print(f"[{args.source} <={args.max_close_hours:g}h] {st['markets']} markets from "
+              f"{snap.name} ({age_min:.0f} min old); asked {st['asked']}, logged "
+              f"{st['forecasts']} ({st['acted']} acted), deferred {st['deferred']}, "
+              f"{st['skipped_seen']} done earlier, {st['errors']} errors, "
               f"{st['research_calls']} research calls in {elapsed:.0f}s -> {path}")
 
 
