@@ -459,70 +459,129 @@ class KalshiQuantExperiment:
     def variation_prompt(self, parent: Candidate, siblings: Sequence[Score]) -> str:
         """What to tell the agent, given what has already been tried.
 
-        The whole value is the failure list. A loop that cannot name its own
-        dead ends rediscovers them: the generic prompt used on 2026-09-01
-        produced 25 candidates that collapsed to about 7 ideas, four of them
-        near-identical log-odds midpoints.
+        Rewritten 2026-09-09 (docs/PLAN-2026-09-09.md, track A). The previous
+        prompt steered every generation into the same dead region: its house-
+        style exemplar was a pure midpoint transform, its tried-list was sorted
+        by skill -- the metric the weekend staleness artifact inflates -- so the
+        artifact family led as "best so far", it named two unexplored fields,
+        and it asked for abstention with no floor. Result over three
+        generations: 7 of 39 candidates read nothing but implied_prob, 12 read
+        only the midpoint plus its own history, and generation 3 wrote one idea
+        six times, each too selective to ever be judged.
 
-        The cost hurdle is stated explicitly because it is the constraint every
-        failure so far has run into. 26 candidates were often right about
-        direction and still lost money, because crossing the spread costs about
-        2 probability points while every measurable bias is 1-3.
+        The agent already reads CLAUDE.md (it runs with the repo as cwd), so the
+        learned-facts list reaches it. What did not reach it was WHY each family
+        fails. A leaderboard is not a lesson; a mechanism is.
         """
         lines = [
             "Write ONE new forecasting candidate for the kalshi_quant "
             "experiment in this repository.",
             "",
             "Read experiments/kalshi_quant/types.py for the contract, and "
-            "experiments/kalshi_quant/candidates/favourite_longshot.py for the "
-            "house style.",
+            "experiments/kalshi_quant/candidates/neglected_leg.py for the house "
+            "style -- the docstring shape (edge, evidence with series-clustered "
+            "intervals, a control with the gate inverted, what would falsify "
+            "it, where it is weak), not the idea. Your idea must differ.",
             "",
             "THE GOVERNING CONSTRAINT. Crossing the spread plus fees costs about "
             "2 probability points even on the tightest books, while every bias "
-            "measured so far is 1-3 points. Beating the midpoint is not enough: "
-            "a candidate must beat it by MORE THAN 2 POINTS on markets it can "
-            "identify in advance. Most failures below were right about direction "
-            "and still lost money.",
+            "measured so far is 1-3 points. A candidate must beat the midpoint "
+            "by MORE THAN 2 POINTS on markets it can identify in advance.",
+            "",
+            "THE MEASURABILITY CONSTRAINT. A candidate is judged on ~200 fills "
+            "across many series, and the observation set grows ~5,000 markets a "
+            "day. To be judged within a week it must ACT on at least 1% of "
+            "markets. Generation 3 abstained on 97-99.9% and produced 16-644 "
+            "fills in a week: unfalsifiable, which is worse than wrong. Be "
+            "selective, and be selective on a population large enough to test.",
+            "",
+            "WHY THE PREVIOUS FAMILIES FAILED -- the mechanisms, so you do not "
+            "rediscover them:",
+            "  * Any function of the midpoint alone (sharpen, logit, shrink, "
+            "shoulders). Can only win if the market's own price is miscalibrated "
+            "as a function of itself. It is, by 1-3 points, which is below the "
+            "cost of trading it. Their Brier skill is REAL but is a staleness "
+            "artifact -- a stale entry price has not absorbed the drift toward "
+            "the outcome, sharpening recovers that drift, and it concentrates on "
+            "weekend sports days (median entry staleness 33 min vs 18). It never "
+            "converts to money: the whole family is proven to LOSE 0.5-2.7 cents "
+            "per contract at 0.4-0.6 cent resolution. Do not write another.",
+            "  * Favourite / longshot corrections gated on PRICE. Right about "
+            "direction, 1-3 points of edge, below the hurdle. Nine variants.",
+            "  * Favourites gated on a narrow behavioural condition (unmoved, "
+            "untraded, unchurned, unclimbed, ground). Positive P&L on selection "
+            "series that collapsed on held-out series (+0.0546 -> +0.0010), and "
+            "too few fills to judge. Six of eight in generation 3 were this.",
+            "  * Momentum / drift extrapolated linearly. Drift's edge is "
+            "non-monotone; the linear version returned -0.055/contract.",
+            "  * sibling_coherence assumed events are mutually exclusive. Nested "
+            "ladders (over 1.5 / 2.5 / 3.5) correctly sum above 1.0.",
             "",
         ]
         if parent is not None:
             lines += [
                 f"PARENT: {parent.candidate_id} (module {parent.module_path})",
                 f"  rationale: {parent.rationale}",
-                "Read it. Your candidate should differ in MECHANISM, not just in "
-                "constants -- retuning a threshold is not a new hypothesis.",
+                "Read it. Differ in MECHANISM -- which INPUTS you read and why "
+                "they carry information -- not in constants. Retuning a "
+                "threshold is not a new hypothesis.",
                 "",
             ]
 
-        ranked = sorted((s for s in siblings if s.primary == s.primary),
-                        key=lambda s: -s.primary)
-        if ranked:
-            lines.append("ALREADY TRIED AND SCORED. Do not resubmit a variation "
-                         "of these:")
-            for s in ranked[:24]:
+        # Order by what actually matters: money verdict, then skill within it.
+        # Sorted by skill alone the artifact family leads the list and reads as
+        # the best work so far. It is the worst.
+        scored = [s for s in siblings if s.primary == s.primary]
+        if scored:
+            def _key(s: Score) -> tuple[int, float]:
+                return (pnl_verdict(s)[0], -s.primary)
+            ranked = sorted(scored, key=_key)
+            label = {GATE_FAIL: "LOSES MONEY (proven)",
+                     GATE_UNPROVEN: "unproven",
+                     GATE_PASS: "PROFITABLE on selection series"}
+            lines.append("ALREADY TRIED. Grouped by money verdict, which is the "
+                         "one that counts; skill is shown because it is the "
+                         "fitness, but skill without money is the artifact above.")
+            for s in ranked[:30]:
+                v, _ = pnl_verdict(s)
                 pnl = s.secondary.get("pnl_per_contract", float("nan"))
-                lo, hi = s.primary_ci
-                money = "no profit" if pnl != pnl or pnl <= 0 else f"P&L {pnl:+.4f}"
-                lines.append(f"  {s.candidate_id:<26} skill {s.primary:+.4f} "
-                             f"[{lo:+.4f},{hi:+.4f}]  n={s.n_observations:,}  {money}")
+                nf = int(s.secondary.get("pnl_n_fills", 0))
+                lines.append(f"  {s.candidate_id:<26} {label[v]:<32} "
+                             f"P&L {pnl:+.4f}/ct on {nf:,} fills  "
+                             f"skill {s.primary:+.4f}")
             lines.append("")
 
         lines += [
-            "UNEXPLORED. ForecastContext carries two fields almost nothing uses:",
-            "  price_history  this market's own earlier quotes, oldest first",
-            "  siblings       other markets in the same EVENT, quoted at about "
-            "the same time",
+            "UNEXPLORED, WITH DATA TO SUPPORT IT. Measured 2026-09-09 over "
+            "87,831 observations:",
+            "  * EVENT COHERENCE. 65% of observations have >=2 quoted siblings "
+            "(other legs of the same event, in context.siblings, with "
+            "context.sibling_sum). Zero candidates have used the aggregate. "
+            "Mispricing BETWEEN related contracts is arithmetic, not "
+            "prediction. Mind nested ladders: check exclusivity before "
+            "assuming legs sum to 1.",
+            "  * BOOK DEPTH. market.yes_bid_size / yes_ask_size are present on "
+            "100% of observations (median 92 contracts). Three candidates have "
+            "read them. Depth imbalance, depth relative to siblings, depth "
+            "relative to the market's own history.",
+            "  * HORIZON. market.close_time - context.now. Median entry is 0.5h "
+            "from close, p90 is 53h. Two candidates condition on it. The "
+            "population is overwhelmingly near-expiry; behaviour there differs.",
+            "  * SERIES HISTORY. context.series_history: resolutions of earlier "
+            "markets in the same series, known before now. Two candidates use "
+            "it, both as a crude base rate.",
+            "  DEAD, do not use: market.liquidity (always 0.0), market.is_mve "
+            "(zero observations survive to scoring).",
             "",
-            "Prefer a candidate that ABSTAINS often and acts strongly on a "
-            "well-defined subset over one that nudges every market slightly -- "
-            "the failures above nudged everything and paid the spread for it.",
-            "",
-            "Give it a docstring stating the edge, the evidence for it, and what "
-            "would falsify it. Be honest about weak evidence; a candidate that "
-            "overstates its case is worse than one admitting it is a guess.",
+            "Give it a docstring stating the edge, the evidence for it, the "
+            "control, and what would falsify it. Measure on the data in "
+            "data/kalshi_quant/ if you can, honestly: every number you write "
+            "is in-sample and INVARIANT #1 will exclude it from the score, so "
+            "call it a hypothesis, not a result. State the action rate.",
             "",
             "Do not modify, create, or delete ANY file outside "
-            "experiments/kalshi_quant/candidates/.",
+            "experiments/kalshi_quant/candidates/, and do not leave scratch "
+            "files (pickles, notes) in it -- only the one candidate module.",
         ]
         return "\n".join(lines)
 
