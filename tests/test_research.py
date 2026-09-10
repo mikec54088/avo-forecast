@@ -325,6 +325,49 @@ def test_the_model_is_recorded_on_every_logged_forecast(tmp_path):
     assert (forecast_log.read(tmp_path)["researcher"] == "stub:pinned").all()
 
 
+def test_the_claude_binary_is_resolved_not_assumed(monkeypatch):
+    """A launchd job gets PATH=/usr/bin:/bin:/usr/sbin:/sbin, so which() finds
+    nothing and a bare "claude" fails to exec. Measured 2026-09-10: every
+    research call from the launchd runner failed this way while the identical
+    call from a shell worked. Raise loudly -- a researcher that cannot run must
+    not be mistaken for one that found nothing."""
+    from experiments.kalshi_research import researcher as R
+
+    monkeypatch.setattr(R.shutil, "which", lambda _: None)
+    monkeypatch.setattr(R, "_CLAUDE_FALLBACKS", (Path("/nonexistent/claude"),))
+    with pytest.raises(FileNotFoundError, match="minimal PATH"):
+        R.claude_exe()
+
+    monkeypatch.setattr(R, "_CLAUDE_FALLBACKS", (Path(__file__),))
+    assert R.claude_exe() == __file__       # found via fallback, not PATH
+
+
+def test_the_research_text_is_recorded_as_evidence(tmp_path):
+    """Web search is not reproducible: a forecast whose input was not recorded
+    can never be checked again. On 2026-09-10 the first four live forecasts all
+    fired the same keyword gate and there was no way to tell a real injury
+    report from the word "questionable" in a routine preview."""
+    from avo.core.types import Candidate
+
+    class Researches:
+        MANIFEST: ClassVar[dict] = {"candidate_id": "r"}
+        def forecast(self, m, c):
+            c.research("is anyone hurt")
+            return m.implied_prob * 0.9
+
+    class FakeExp:
+        def seed_candidates(self):
+            return [Candidate("r", "kalshi_research", 0, None, NOW, "x", "")]
+        def load_candidate(self, c):
+            return Researches()
+
+    run_pass(StubResearcher(default="Star player ruled out"), _snapshot(1),
+             now=NOW, root=tmp_path, experiment=FakeExp())
+    row = forecast_log.read(tmp_path).iloc[0]
+    assert "is anyone hurt" in row["research_text"]
+    assert "Star player ruled out" in row["research_text"]
+
+
 # ---------------------------------------------------- the research candidate
 
 def test_research_candidate_gates_research_on_the_game_date(tmp_path):

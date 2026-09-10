@@ -27,6 +27,17 @@
         <string>50000</string>
     </array>
 
+    <!-- launchd gives a job PATH=/usr/bin:/bin:/usr/sbin:/sbin and nothing
+         else. Without this the runner cannot find the claude CLI and every
+         research call fails (measured 2026-09-10). researcher.claude_exe()
+         also falls back to known install paths; this is the belt to its
+         braces, and fixes anything else the agent shells out to. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/hermesagent/.local/bin:/Users/hermesagent/miniconda3/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
     <key>WorkingDirectory</key>
     <string>/Users/hermesagent/development/avo-forecast</string>
 

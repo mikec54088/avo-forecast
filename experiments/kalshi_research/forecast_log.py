@@ -12,6 +12,13 @@ the instant it saw it, and scoring later joins these rows to resolutions. The
 row's `forecast_at` is the holdout: only outcomes resolving strictly after it
 count. `candidate.created_at` is irrelevant here.
 
+`research_text` stores what the researcher actually returned, truncated. It is
+the evidence for every non-abstention and the only way to audit WHY a candidate
+moved a price: web search is not reproducible, so a forecast whose input was
+not recorded can never be checked again. On 2026-09-10 the first four live
+forecasts all fired the same keyword gate, and without the text there was no way
+to tell a real injury report from the word "questionable" in a routine preview.
+
 Append-only Parquet under data/kalshi_research/forecasts/date=*/. Never
 committed (INVARIANT #5). Every candidate's forecast is logged for every market
 in a pass -- including abstentions, which log the implied probability -- so
@@ -41,7 +48,8 @@ COLS = [
 
 def row(candidate_id: str, m: MarketSnapshot, forecast: float, forecast_at: datetime,
         research_calls: int, research_elapsed_s: float, researcher: str,
-        error: str = "", research_error: str = "") -> dict[str, object]:
+        error: str = "", research_error: str = "",
+        research_text: str = "") -> dict[str, object]:
     return {
         "candidate_id": candidate_id, "ticker": m.ticker,
         "event_ticker": m.event_ticker, "series_ticker": m.series_ticker,
@@ -55,6 +63,7 @@ def row(candidate_id: str, m: MarketSnapshot, forecast: float, forecast_at: date
         "research_calls": research_calls, "research_elapsed_s": research_elapsed_s,
         "researcher": researcher, "error": error,
         "research_error": research_error,
+        "research_text": research_text,
     }
 
 

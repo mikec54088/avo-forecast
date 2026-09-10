@@ -17,6 +17,12 @@ A LaunchAgent runs in the user session and needs no such grant.
 Paths inside the plists are absolute — edit them (`WorkingDirectory`, the `uv`
 path, and both log paths) before loading. Find `uv` with `command -v uv`.
 
+A launchd job also gets `PATH=/usr/bin:/bin:/usr/sbin:/sbin` and nothing else,
+so anything the job shells out to must be found by absolute path or via an
+`EnvironmentVariables` PATH. The research runner needs both — see its plist.
+This failure is silent in the usual way: the job runs, exits 0, and simply
+never does the work.
+
     cp com.avoforecast.kalshi-*.plist ~/Library/LaunchAgents/
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.avoforecast.kalshi-snapshot.plist
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.avoforecast.kalshi-settle.plist
