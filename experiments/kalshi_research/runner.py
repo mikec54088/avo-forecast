@@ -186,7 +186,8 @@ def run_pass(
             rows.append(forecast_log.row(
                 c.candidate_id, m, p, now, ctx.calls,
                 ctx.elapsed_s or (time.monotonic() - t0), researcher.name, err,
-                "; ".join(ctx.errors)[:300]))
+                "; ".join(ctx.errors)[:300],
+                " || ".join(f"Q: {t.query} -> {t.text}" for t in ctx.trail)[:4000]))
 
     path = forecast_log.append(rows, root) if rows else None
     return path, stats

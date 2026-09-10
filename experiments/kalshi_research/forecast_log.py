@@ -42,7 +42,7 @@ COLS = [
     "yes_bid", "yes_ask", "yes_bid_size", "yes_ask_size", "last_price",
     "volume", "open_interest", "price_level_structure",
     "research_calls", "research_elapsed_s", "researcher", "error",
-    "research_error",
+    "research_error", "research_text",
 ]
 
 
