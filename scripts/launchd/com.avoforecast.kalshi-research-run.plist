@@ -17,6 +17,8 @@
         <string>full</string>
         <string>--researcher</string>
         <string>claude</string>
+        <string>--model</string>
+        <string>claude-sonnet-5</string>
         <string>--max-close-hours</string>
         <string>120</string>
         <string>--final-hours</string>
@@ -36,7 +38,18 @@
          2026-09-09: 0 of 1,505 near-pass rows). Zero API calls; research
          cost is incurred only by candidates that call context.research. The
          control never does, so with the control alone this spends nothing
-         and simply starts the log's clock. -->
+         and simply starts the log's clock.
+
+         --model is PINNED, not left to the CLI default. Two reasons: the
+         default was Fable and its credits ran out, which silently turned every
+         research call into an error (2026-09-10); and INVARIANT #7 makes the
+         researcher part of the experimental setup -- forecasts researched by
+         different models are not comparable, and the model is recorded per row
+         in the forecast log's `researcher` column. Sonnet 5 because the task
+         is retrieval and grounded summarisation, not reasoning: the prompt
+         forbids the researcher from offering a probability, and the mapping
+         from findings to a forecast lives in the candidate. Cost also scales
+         with market count, which the generating agent's does not. -->
     <key>StartCalendarInterval</key>
     <dict><key>Minute</key><integer>50</integer></dict>
 

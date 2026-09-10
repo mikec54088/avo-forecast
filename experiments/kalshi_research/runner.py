@@ -196,7 +196,10 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["run"])
     ap.add_argument("--researcher", default="claude", choices=["claude", "null"])
-    ap.add_argument("--model", default=None)
+    ap.add_argument("--model", default=None,
+                    help="research model; defaults to "
+                         "researcher.DEFAULT_RESEARCH_MODEL. Pinned on purpose "
+                         "(INVARIANT #7): the CLI default is a user setting.")
     ap.add_argument("--source", default="full", choices=["full", "near"],
                     help="which capture pass to read; full is the only one that "
                          "carries major-league game markets")

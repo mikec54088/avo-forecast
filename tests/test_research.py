@@ -300,6 +300,31 @@ def test_scoring_excludes_rows_whose_research_failed(tmp_path):
     assert score.n_observations == 0, "broken-channel rows must not be scored"
 
 
+def test_a_research_model_must_be_pinned():
+    """The CLI default is a user setting that can change under the experiment.
+    It was Fable on 2026-09-10, its credits were out, and every call returned
+    the credit notice as its TEXT -- which a keyword candidate reads as "no
+    news". INVARIANT #7 applies to the researcher as to the generating backend."""
+    from experiments.kalshi_research.researcher import (
+        DEFAULT_RESEARCH_MODEL,
+        ClaudeResearcher,
+        make,
+    )
+    with pytest.raises(ValueError, match="explicit model"):
+        ClaudeResearcher()
+    assert make("claude").name.startswith(f"claude:{DEFAULT_RESEARCH_MODEL}:")
+    assert make("claude", "claude-opus-5").name.startswith("claude:claude-opus-5:")
+
+
+def test_the_model_is_recorded_on_every_logged_forecast(tmp_path):
+    """Forecasts researched by different models are not comparable, so the log
+    must say which one produced each row."""
+    from experiments.kalshi_research.researcher import StubResearcher
+    stub = StubResearcher(name="stub:pinned")
+    run_pass(stub, _snapshot(2), now=NOW, root=tmp_path, experiment=EXP)
+    assert (forecast_log.read(tmp_path)["researcher"] == "stub:pinned").all()
+
+
 # ---------------------------------------------------- the research candidate
 
 def test_research_candidate_gates_research_on_the_game_date(tmp_path):

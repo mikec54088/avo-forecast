@@ -59,11 +59,29 @@ class ClaudeResearcher:
     """
 
     model: str | None = None
-    timeout_s: int = 120
-    max_turns: int = 6
+    timeout_s: int = 180
+    # 6 was too tight. Measured 2026-09-10: a well-covered MLB game answered in
+    # 58s well inside 6 turns, but an obscure CS2 esports fixture burned them
+    # all searching and returned exit 1 with the body "Error: Reached max turns
+    # (6)". That is indistinguishable from a real failure and the runner
+    # correctly deferred it -- but the query was answerable, just harder. The
+    # hard queries are exactly the ones where the market is least efficient, so
+    # a ceiling that only clears easy ones selects against the edge.
+    max_turns: int = 16
     name: str = ""
 
     def __post_init__(self) -> None:
+        if not self.model:
+            # An unpinned researcher follows the CLI's default model, which is
+            # a user setting that can change under the experiment. On
+            # 2026-09-10 that default was Fable, its credits were exhausted,
+            # and every research call returned the credit notice AS ITS TEXT --
+            # which a keyword-matching candidate reads as "no news". INVARIANT
+            # #7 applies to the researcher exactly as to the generating
+            # backend: pin it, record it, never let it drift.
+            raise ValueError(
+                "ClaudeResearcher needs an explicit model (e.g. claude-sonnet-5); "
+                "the CLI default is a user setting and would break comparability")
         exe = shutil.which("claude") or "claude"
         try:
             v = subprocess.run([exe, "--version"], capture_output=True, text=True,
@@ -93,9 +111,12 @@ class ClaudeResearcher:
         return ResearchResult(query, text, time.monotonic() - t0, error=err)
 
 
+DEFAULT_RESEARCH_MODEL = "claude-sonnet-5"
+
+
 def make(kind: str, model: str | None = None) -> NullResearcher | ClaudeResearcher:
     if kind == "claude":
-        return ClaudeResearcher(model=model)
+        return ClaudeResearcher(model=model or DEFAULT_RESEARCH_MODEL)
     if kind == "null":
         return NullResearcher()
     raise KeyError(f"unknown researcher {kind!r}; use claude or null")
