@@ -35,12 +35,13 @@ COLS = [
     "yes_bid", "yes_ask", "yes_bid_size", "yes_ask_size", "last_price",
     "volume", "open_interest", "price_level_structure",
     "research_calls", "research_elapsed_s", "researcher", "error",
+    "research_error",
 ]
 
 
 def row(candidate_id: str, m: MarketSnapshot, forecast: float, forecast_at: datetime,
         research_calls: int, research_elapsed_s: float, researcher: str,
-        error: str = "") -> dict[str, object]:
+        error: str = "", research_error: str = "") -> dict[str, object]:
     return {
         "candidate_id": candidate_id, "ticker": m.ticker,
         "event_ticker": m.event_ticker, "series_ticker": m.series_ticker,
@@ -53,6 +54,7 @@ def row(candidate_id: str, m: MarketSnapshot, forecast: float, forecast_at: date
         "price_level_structure": m.price_level_structure,
         "research_calls": research_calls, "research_elapsed_s": research_elapsed_s,
         "researcher": researcher, "error": error,
+        "research_error": research_error,
     }
 
 

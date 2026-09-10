@@ -70,6 +70,7 @@ class ResearchContext:
     calls: int = 0
     elapsed_s: float = 0.0
     trail: list[ResearchResult] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
     def research(self, query: str) -> str:
         if self.calls >= self.budget:
@@ -79,7 +80,21 @@ class ResearchContext:
         self.calls += r.calls
         self.elapsed_s += r.elapsed_s
         self.trail.append(r)
+        if r.error:
+            self.errors.append(r.error)
         return r.text
+
+    @property
+    def research_failed(self) -> bool:
+        """Did the channel break, as opposed to finding nothing?
+
+        These are not the same and must never be scored the same. On
+        2026-09-10 a live call returned exit 1 with the body "You're out of
+        usage credits" -- text a keyword-matching candidate reads as "no news",
+        so it abstains and looks exactly like the control. A candidate whose
+        research failed has not made a forecast; the runner defers it.
+        """
+        return bool(self.errors)
 
     @property
     def sibling_sum(self) -> float:

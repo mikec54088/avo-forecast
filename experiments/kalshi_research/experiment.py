@@ -57,6 +57,7 @@ class LoggedForecast:
     entry: Entry                 # market as quoted at forecast time, outcome, resolved_at
     research_calls: int
     research_elapsed_s: float
+    research_error: str = ""
 
 
 def _market(r: Any) -> MarketSnapshot:
@@ -101,6 +102,7 @@ def load_forecast_observations(
             candidate_id=str(r.candidate_id), forecast=float(r.forecast), forecast_at=fa,
             entry=Entry(market=_market(r), resolved_at=ra, outcome=int(r.outcome)),
             research_calls=int(r.research_calls), research_elapsed_s=float(r.research_elapsed_s),
+            research_error=str(getattr(r, "research_error", "") or ""),
         ))
     return out
 
@@ -137,10 +139,18 @@ class KalshiResearchExperiment:
         history: Any = None,
         subset: str = "all",
     ) -> Score:
-        """Judge the candidate's LOGGED forecasts. Nothing is recomputed."""
+        """Judge the candidate's LOGGED forecasts. Nothing is recomputed.
+
+        Rows whose research call FAILED are excluded. Such a row records what
+        the market said, not what the candidate thought -- a broken channel, not
+        a forecast -- and counting it would drag every research candidate toward
+        the control while looking like a result. The runner already defers them
+        outside the final window; these are the ones it had to log anyway.
+        """
         if entries is None:
             entries = load_forecast_observations()
-        mine = [o for o in entries if o.candidate_id == candidate.candidate_id]
+        mine = [o for o in entries
+                if o.candidate_id == candidate.candidate_id and not o.research_error]
         if subset != "all":
             want = subset == "confirmation"
             mine = [o for o in mine

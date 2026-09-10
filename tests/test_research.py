@@ -181,12 +181,131 @@ def test_latest_snapshot_distinguishes_full_from_near(tmp_path):
     assert latest_snapshot("near", tmp_path).name == "101500-near.parquet"
 
 
-# ------------------------------------------------------ the staged candidate
+def test_a_failed_research_call_defers_the_market_instead_of_consuming_it(tmp_path):
+    """2026-09-10: a live call returned exit 1 whose BODY was "You're out of
+    usage credits". A keyword candidate reads that as "no news" and abstains,
+    so without this the market would be logged as a forecast identical to the
+    control's and never asked again -- a broken channel wearing the face of a
+    result."""
+    from avo.core.types import Candidate
+    from experiments.kalshi_research.types import ResearchResult
 
-def test_staged_candidate_gates_research_on_the_game_date(tmp_path):
+    class Broken:
+        name = "broken"
+        def research(self, query):
+            return ResearchResult(query, "You're out of usage credits.", 0.1,
+                                  error="exit 1: ")
+
+    class Researches:
+        MANIFEST: ClassVar[dict] = {"candidate_id": "r"}
+        def forecast(self, m, c):
+            c.research("anything")
+            return m.implied_prob
+
+    class FakeExp:
+        def seed_candidates(self):
+            return [Candidate("r", "kalshi_research", 0, None, NOW, "x", "")]
+        def load_candidate(self, c):
+            return Researches()
+
+    _, st = run_pass(Broken(), _snapshot(3, close_in_h=48.0), now=NOW,
+                     root=tmp_path, experiment=FakeExp())
+    assert st["research_failed"] == 3 and st["deferred"] == 3
+    assert st["forecasts"] == 0 and forecast_log.read(tmp_path).empty
+
+
+def test_a_failed_research_call_inside_the_final_window_is_logged_with_its_error(tmp_path):
+    """Deferring forever would silently drop the market, so in the final window
+    it is logged -- and the log says why it is worthless."""
+    from avo.core.types import Candidate
+    from experiments.kalshi_research.types import ResearchResult
+
+    class Broken:
+        name = "broken"
+        def research(self, query):
+            return ResearchResult(query, "", 0.1, error="exit 1: out of credits")
+
+    class Researches:
+        MANIFEST: ClassVar[dict] = {"candidate_id": "r"}
+        def forecast(self, m, c):
+            c.research("anything")
+            return m.implied_prob
+
+    class FakeExp:
+        def seed_candidates(self):
+            return [Candidate("r", "kalshi_research", 0, None, NOW, "x", "")]
+        def load_candidate(self, c):
+            return Researches()
+
+    _, st = run_pass(Broken(), _snapshot(2, close_in_h=0.5), now=NOW,
+                     root=tmp_path, experiment=FakeExp())
+    df = forecast_log.read(tmp_path)
+    assert st["forecasts"] == 2 and len(df) == 2
+    assert df["research_error"].str.contains("out of credits").all()
+
+
+def test_a_successful_research_call_is_not_flagged_as_failed(tmp_path):
+    from avo.core.types import Candidate
+
+    class Researches:
+        MANIFEST: ClassVar[dict] = {"candidate_id": "r"}
+        def forecast(self, m, c):
+            c.research("anything")
+            return m.implied_prob
+
+    class FakeExp:
+        def seed_candidates(self):
+            return [Candidate("r", "kalshi_research", 0, None, NOW, "x", "")]
+        def load_candidate(self, c):
+            return Researches()
+
+    _, st = run_pass(StubResearcher(), _snapshot(2, close_in_h=48.0), now=NOW,
+                     root=tmp_path, experiment=FakeExp())
+    assert st["research_failed"] == 0 and st["forecasts"] == 2
+    assert (forecast_log.read(tmp_path)["research_error"] == "").all()
+
+
+def test_scoring_excludes_rows_whose_research_failed(tmp_path):
+    """A broken-channel row holds the market's own number. Counting it would
+    drag a research candidate toward the control and look like a result."""
+    from avo.core.types import Candidate
+    from experiments.kalshi_research.types import ResearchResult
+
+    class Broken:
+        name = "broken"
+        def research(self, query):
+            return ResearchResult(query, "", 0.1, error="exit 1: out of credits")
+
+    class Researches:
+        MANIFEST: ClassVar[dict] = {"candidate_id": "r"}
+        def forecast(self, m, c):
+            c.research("anything")
+            return m.implied_prob
+
+    class FakeExp:
+        def seed_candidates(self):
+            return [Candidate("r", "kalshi_research", 0, None, NOW, "x", "")]
+        def load_candidate(self, c):
+            return Researches()
+
+    run_pass(Broken(), _snapshot(2, close_in_h=0.5), now=NOW, root=tmp_path,
+             experiment=FakeExp())
+    _resolutions(tmp_path, {f"KXTEST-T{i}": (NOW + timedelta(hours=1), 1) for i in range(2)})
+    obs = load_forecast_observations(tmp_path, tmp_path)
+    assert len(obs) == 2 and all(o.research_error for o in obs)
+    c = Candidate("r", "kalshi_research", 0, None, NOW, "x", "")
+    s = FakeExp().load_candidate(c)
+    from avo.core import registry
+    score = registry.load("kalshi_research").score(c, s, entries=obs)
+    assert score.n_observations == 0, "broken-channel rows must not be scored"
+
+
+# ---------------------------------------------------- the research candidate
+
+def test_research_candidate_gates_research_on_the_game_date(tmp_path):
     import importlib.util
     spec = importlib.util.spec_from_file_location(
-        "inf", REPO / "experiments/kalshi_research/staging/injury_news_favourite.py")
+        "inf", REPO / "experiments/kalshi_research/candidates/injury_news_favourite.py")
     mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
     assert mod.game_date("KXMLBGAME-26SEP081940PITCWS-PIT") == datetime(2026, 9, 8, tzinfo=timezone.utc)
     assert mod.game_date("KXNCAAFGAME-26SEP19FIUFAU-FIU") == datetime(2026, 9, 19, tzinfo=timezone.utc)

@@ -144,7 +144,8 @@ def run_pass(
     already = forecast_log.seen(root)
     chosen = select_markets(snapshot, now, max_close_hours, max_markets)
     stats = {"markets": len(chosen), "asked": 0, "forecasts": 0, "acted": 0,
-             "deferred": 0, "skipped_seen": 0, "errors": 0, "research_calls": 0}
+             "deferred": 0, "skipped_seen": 0, "errors": 0, "research_calls": 0,
+             "research_failed": 0}
     rows: list[dict[str, object]] = []
 
     for r in chosen.itertuples(index=False):
@@ -168,7 +169,14 @@ def run_pass(
                 err, p = f"raised {exc!r}"[:200], m.implied_prob
             stats["asked"] += 1
             stats["research_calls"] += ctx.calls
+            stats["research_failed"] += ctx.research_failed
             acted = abs(p - m.implied_prob) > 1e-12 or ctx.calls > 0 or bool(err)
+            # A broken research channel is not a forecast. Consuming the market
+            # would log an abstention indistinguishable from the control and
+            # never ask again -- see ResearchContext.research_failed.
+            if ctx.research_failed and hours_left > final_hours:
+                stats["deferred"] += 1
+                continue
             if not acted and hours_left > final_hours:
                 stats["deferred"] += 1      # ask again next pass
                 continue
@@ -177,7 +185,8 @@ def run_pass(
             stats["errors"] += bool(err)
             rows.append(forecast_log.row(
                 c.candidate_id, m, p, now, ctx.calls,
-                ctx.elapsed_s or (time.monotonic() - t0), researcher.name, err))
+                ctx.elapsed_s or (time.monotonic() - t0), researcher.name, err,
+                "; ".join(ctx.errors)[:300]))
 
     path = forecast_log.append(rows, root) if rows else None
     return path, stats
@@ -220,7 +229,11 @@ def main() -> None:
               f"{snap.name} ({age_min:.0f} min old); asked {st['asked']}, logged "
               f"{st['forecasts']} ({st['acted']} acted), deferred {st['deferred']}, "
               f"{st['skipped_seen']} done earlier, {st['errors']} errors, "
-              f"{st['research_calls']} research calls in {elapsed:.0f}s -> {path}")
+              f"{st['research_calls']} research calls "
+              f"({st['research_failed']} FAILED) in {elapsed:.0f}s -> {path}")
+        if st["research_failed"]:
+            print(f"      WARNING: {st['research_failed']} research call(s) failed. "
+                  "Those markets were deferred, not scored. Check credits/network.")
 
 
 if __name__ == "__main__":
