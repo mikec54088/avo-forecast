@@ -97,6 +97,23 @@ Read this before proposing anything; most obvious ideas are already dead.
   caps it at 60 minutes.
 - **`liquidity` is always 0.0** — 610,077 rows, no exceptions. A candidate
   gating on it silently becomes a constant.
+- **Use Sonnet 5 to GENERATE, not just to research.** Compared 2026-09-11 on
+  the same prompt: Opus wrote one candidate in 87 turns / 43 tool calls / 27
+  min; Sonnet wrote two in ~17 min each, both accepted, both reading inputs the
+  first 39 candidates ignored, both arguing against themselves. Quality was not
+  the differentiator; cost and wall clock were. Opus is not wasted here, but it
+  is not buying anything measurable either. ALWAYS pass `--model`: the CLI
+  default is a user setting and exhausted Fable credits killed a whole
+  generation silently.
+- **A generation run competes with your own session for the account's rolling
+  window.** One invocation is a full agentic session, not a request. Three runs
+  died on quota before this was understood. `-n 2` is the default for that
+  reason; candidates accumulate in the registry whatever the generation number.
+- **The dataset digest is computed once per run** (`digest.py`) and pasted into
+  the prompt. It removed the expensive half of an invocation -- 36 of 43 tool
+  calls were the agent characterising the dataset itself -- and, more
+  importantly, made candidates' claims comparable: generation 3 quoted 6-12
+  point edges measured privately, and no two could be checked against another.
 - **Not every event is mutually exclusive.** Nested ladders ("over 1.5 / 2.5 /
   3.5 goals") correctly sum above 1.0; `sibling_coherence` assumes exclusivity
   and is documented as flawed because of it.
