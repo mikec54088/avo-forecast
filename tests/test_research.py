@@ -395,6 +395,7 @@ def test_the_candidate_fades_only_when_the_verdict_names_its_own_side():
     opponent cannot be identified from a title like "Atlanta wins" without
     guessing -- and a candidate that guesses is not falsifiable."""
     import importlib
+
     from experiments.kalshi_quant.types import MarketSnapshot
     from experiments.kalshi_research.researcher import StubResearcher
     mod = importlib.import_module(
