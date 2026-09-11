@@ -18,6 +18,7 @@ from avo.core.selection import (
     is_confirmation_group,
 )
 from avo.core.types import Candidate, Score
+from experiments.kalshi_quant import digest
 from experiments.kalshi_quant.observations import (
     ENTRY_POLICY,
     Entry,
@@ -191,6 +192,9 @@ def paper_trade(
 class KalshiQuantExperiment:
     name = "kalshi_quant"
 
+    def __init__(self) -> None:
+        self._digest: digest.Digest | None = None
+
     def load_candidate(self, candidate: Candidate) -> Any:
         mod = importlib.import_module(candidate.module_path)
         if not hasattr(mod, "forecast"):
@@ -200,10 +204,17 @@ class KalshiQuantExperiment:
         return mod
 
     def scoring_inputs(self) -> tuple[list[Entry], SeriesHistory]:
-        """Load the observation set once for a whole ranking pass."""
+        """Load the observation set once for a whole ranking pass.
+
+        Also refreshes the dataset digest, because this is the one place that
+        already holds the entries and every generating agent needs the same
+        summary. See digest.py: computing it per agent cost 36 Bash calls an
+        invocation and produced numbers no two candidates could be compared on.
+        """
         entries = load_entries()
         if not entries:
             raise SystemExit("no observations yet; capture needs to run first")
+        self._digest = digest.load_or_build(entries)
         return entries, SeriesHistory(entries)
 
     def score(
@@ -559,37 +570,43 @@ class KalshiQuantExperiment:
             lines.append("")
 
         lines += [
-            "UNEXPLORED, WITH DATA TO SUPPORT IT. Measured 2026-09-09 over "
-            "87,831 observations:",
-            "  * EVENT COHERENCE. 65% of observations have >=2 quoted siblings "
-            "(other legs of the same event, in context.siblings, with "
-            "context.sibling_sum). Zero candidates have used the aggregate. "
-            "Mispricing BETWEEN related contracts is arithmetic, not "
-            "prediction. Mind nested ladders: check exclusivity before "
-            "assuming legs sum to 1.",
-            "  * BOOK DEPTH. market.yes_bid_size / yes_ask_size are present on "
-            "100% of observations (median 92 contracts). Three candidates have "
-            "read them. Depth imbalance, depth relative to siblings, depth "
-            "relative to the market's own history.",
-            "  * HORIZON. market.close_time - context.now. Median entry is 0.5h "
-            "from close, p90 is 53h. Two candidates condition on it. The "
-            "population is overwhelmingly near-expiry; behaviour there differs.",
-            "  * SERIES HISTORY. context.series_history: resolutions of earlier "
-            "markets in the same series, known before now. Two candidates use "
-            "it, both as a crude base rate.",
+            "UNEXPLORED INPUTS. Counts are how many of the candidates above "
+            "read each one; the dataset summary at the end has their shape:",
+            "  * EVENT COHERENCE -- context.siblings, context.sibling_sum. "
+            "ZERO candidates have used the aggregate. Mispricing BETWEEN "
+            "related contracts is arithmetic rather than prediction. Mind "
+            "nested ladders: check exclusivity before assuming legs sum to 1.",
+            "  * BOOK DEPTH -- market.yes_bid_size / yes_ask_size. Three "
+            "candidates. Depth imbalance, depth against siblings, depth "
+            "against the market's own history.",
+            "  * HORIZON -- market.close_time - context.now. Two candidates. "
+            "The population is overwhelmingly near-expiry; behaviour differs "
+            "there.",
+            "  * SERIES HISTORY -- context.series_history, resolutions of "
+            "earlier markets in the same series known before now. Two "
+            "candidates, both as a crude base rate.",
             "  DEAD, do not use: market.liquidity (always 0.0), market.is_mve "
             "(zero observations survive to scoring).",
             "",
             "Give it a docstring stating the edge, the evidence for it, the "
-            "control, and what would falsify it. Measure on the data in "
-            "data/kalshi_quant/ if you can, honestly: every number you write "
-            "is in-sample and INVARIANT #1 will exclude it from the score, so "
-            "call it a hypothesis, not a result. State the action rate.",
+            "control, and what would falsify it. State the action rate. Every "
+            "number you quote is in-sample and INVARIANT #1 will exclude it "
+            "from the score, so call it a hypothesis, not a result.",
+            "",
+            "The dataset summary below was computed once, for you and for "
+            "every other candidate in this generation. PREFER IT to deriving "
+            "the same shape yourself: quoting the shared numbers is what makes "
+            "your claims comparable with the others', and a full pass over the "
+            "observation set costs more than the idea is usually worth. Load "
+            "the data only to test something the summary does not answer.",
             "",
             "Do not modify, create, or delete ANY file outside "
             "experiments/kalshi_quant/candidates/, and do not leave scratch "
             "files (pickles, notes) in it -- only the one candidate module.",
         ]
+        d = self._digest or digest.load_or_build()
+        if d is not None:
+            lines += ["", "=" * 70, d.text]
         return "\n".join(lines)
 
 

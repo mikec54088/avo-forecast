@@ -38,7 +38,14 @@ def main() -> None:
     ev.add_argument("experiment")
     ev.add_argument("--backend", default="claude", choices=sorted(BACKENDS))
     ev.add_argument("--model", default=None)
-    ev.add_argument("-n", type=int, default=8, help="candidates per generation")
+    ev.add_argument("-n", type=int, default=2,
+                    help="candidates per generation (default %(default)s). One "
+                         "invocation measured 87 assistant turns / 43 tool "
+                         "calls / 27 min on Opus, and eight back to back "
+                         "exhausted the account's rolling window three runs in "
+                         "a row. Candidates accumulate in the registry "
+                         "whatever the generation number, so small batches run "
+                         "often cost nothing structurally.")
     ev.add_argument("--generations", type=int, default=1)
     ev.add_argument("--timeout", type=int, default=1800,
                     help="seconds per invocation; the informed prompt makes "
