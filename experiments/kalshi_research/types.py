@@ -99,3 +99,28 @@ class ResearchContext:
     @property
     def sibling_sum(self) -> float:
         return sum(s.implied_prob for s in self.siblings if s.has_two_sided_book)
+
+
+def parse_verdict(reply: str) -> tuple[str, str]:
+    """(verdict, evidence) from a v2 research reply.
+
+    The verdict is a token, not prose, so a candidate never has to match
+    substrings against free text. That distinction is the whole point: on
+    2026-09-10 a v1 reply reading "No sourced reports of injury, scratch, or
+    postponement affecting the active roster today" was read as a positive by a
+    substring gate and faded a favourite. A negation now parses as NONE.
+
+    Anything unparseable is NONE. A malformed reply is not evidence, and a
+    candidate that guesses at one has stopped being falsifiable.
+    """
+    verdict, evidence = "NONE", ""
+    for line in reply.splitlines():
+        stripped = line.strip().lstrip("*# ").strip()
+        low = stripped.lower()
+        if low.startswith("verdict:"):
+            verdict = stripped.split(":", 1)[1].strip().strip("*_` ") or "NONE"
+        elif low.startswith("evidence:"):
+            evidence = stripped.split(":", 1)[1].strip().strip("*_` ")
+    if verdict.upper() in {"NONE", "N/A", "NULL", ""}:
+        verdict = "NONE"
+    return verdict, evidence

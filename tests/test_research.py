@@ -361,11 +361,69 @@ def test_the_research_text_is_recorded_as_evidence(tmp_path):
         def load_candidate(self, c):
             return Researches()
 
-    run_pass(StubResearcher(default="Star player ruled out"), _snapshot(1),
+    run_pass(StubResearcher(default="VERDICT: NONE\nEVIDENCE: Star player ruled out"), _snapshot(1),
              now=NOW, root=tmp_path, experiment=FakeExp())
     row = forecast_log.read(tmp_path).iloc[0]
     assert "is anyone hurt" in row["research_text"]
     assert "Star player ruled out" in row["research_text"]
+
+
+def test_a_negation_parses_as_NONE_not_as_a_finding():
+    """The failure that killed injury_news_favourite. Its researcher answered
+    "No sourced reports of injury, scratch, or postponement affecting the
+    active roster today" -- a negation restating the query's own words -- and a
+    substring gate read it as a positive. Three of its four live fades were
+    wrong this way. Prose can always negate; a verdict token cannot."""
+    from experiments.kalshi_research.types import parse_verdict
+
+    for reply in [
+        "No sourced reports of injury, scratch, or postponement affecting the roster today.",
+        "NOTHING FOUND",
+        "VERDICT: NONE\nEVIDENCE: no reports of injury, scratch or postponement",
+        "**VERDICT:** NONE\n**EVIDENCE:** routine preview only",
+        "",
+        "the model rambled without following the format at all",
+    ]:
+        assert parse_verdict(reply)[0] == "NONE", reply[:50]
+
+    v, e = parse_verdict("VERDICT: Atlanta\nEVIDENCE: Albies scratched, Sept 10 (AP)")
+    assert v == "Atlanta" and "Albies" in e
+
+
+def test_the_candidate_fades_only_when_the_verdict_names_its_own_side():
+    """A verdict naming the OPPONENT argues for buying the favourite, but the
+    opponent cannot be identified from a title like "Atlanta wins" without
+    guessing -- and a candidate that guesses is not falsifiable."""
+    import importlib
+    from experiments.kalshi_quant.types import MarketSnapshot
+    from experiments.kalshi_research.researcher import StubResearcher
+    mod = importlib.import_module(
+        "experiments.kalshi_research.candidates.roster_news_favourite")
+
+    on_day = datetime(2026, 9, 11, 18, 0, tzinfo=timezone.utc)
+    def mk(ticker):
+        return MarketSnapshot(ticker, "E", "KXMLBGAME", "Atlanta wins", on_day,
+                              on_day + timedelta(hours=60), 0.69, 0.71, None, 100.0, 50.0)
+    t = next(x for x in (f"KXMLBGAME-26SEP11{i:04d}ATLTB-ATL" for i in range(1000))
+             if mod.wants_research(mk(x), on_day))
+
+    def run(verdict):
+        ctx = ResearchContext(now=on_day, researcher=StubResearcher(
+            default=f"VERDICT: {verdict}\nEVIDENCE: dated report (AP)"))
+        return mod.forecast(mk(t), ctx)
+
+    assert run("Atlanta") == pytest.approx(0.70 - 0.04)   # our side hurt -> fade
+    assert run("Tampa Bay") == pytest.approx(0.70)        # opponent hurt -> abstain
+    assert run("NONE") == pytest.approx(0.70)             # nothing -> abstain
+
+
+def test_the_research_protocol_version_is_recorded(monkeypatch):
+    """Answers produced under different instructions are not comparable, so the
+    protocol version rides in the researcher name alongside the model."""
+    from experiments.kalshi_research import researcher as R
+    monkeypatch.setattr(R.subprocess, "run",
+                        lambda *a, **k: type("P", (), {"stdout": "2.1.0\n", "returncode": 0})())
+    assert R.ClaudeResearcher(model="claude-sonnet-5").name.endswith(f":{R.PROMPT_VERSION}")
 
 
 # ---------------------------------------------------- the research candidate
@@ -373,7 +431,7 @@ def test_the_research_text_is_recorded_as_evidence(tmp_path):
 def test_research_candidate_gates_research_on_the_game_date(tmp_path):
     import importlib.util
     spec = importlib.util.spec_from_file_location(
-        "inf", REPO / "experiments/kalshi_research/candidates/injury_news_favourite.py")
+        "inf", REPO / "experiments/kalshi_research/candidates/roster_news_favourite.py")
     mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
     assert mod.game_date("KXMLBGAME-26SEP081940PITCWS-PIT") == datetime(2026, 9, 8, tzinfo=timezone.utc)
     assert mod.game_date("KXNCAAFGAME-26SEP19FIUFAU-FIU") == datetime(2026, 9, 19, tzinfo=timezone.utc)
@@ -394,11 +452,14 @@ def test_research_candidate_gates_research_on_the_game_date(tmp_path):
     # and a market that passes every gate researches exactly once, within budget
     sampled = next(t for t in (f"KXMLBGAME-26SEP09{i:04d}AAABBB-AAA" for i in range(1000))
                    if mod.wants_research(mk(t, "KXMLBGAME"), on_day))
-    stub = StubResearcher(default="Starting pitcher scratched with injury")
+    stub = StubResearcher(default="VERDICT: AAA\nEVIDENCE: starter scratched (AP, today)")
     ctx = ResearchContext(now=on_day, researcher=stub)
     p = mod.forecast(mk(sampled, "KXMLBGAME"), ctx)
-    assert stub.calls == 1 and p == pytest.approx(0.70 - 0.04)
-    ctx2 = ResearchContext(now=on_day, researcher=StubResearcher())   # NOTHING FOUND
+    assert stub.calls == 1 and p == pytest.approx(0.70)  # verdict names AAA, title says Pittsburgh
+    stub2 = StubResearcher(default="VERDICT: Pittsburgh\nEVIDENCE: starter scratched (AP, today)")
+    ctx3 = ResearchContext(now=on_day, researcher=stub2)
+    assert mod.forecast(mk(sampled, "KXMLBGAME"), ctx3) == pytest.approx(0.70 - 0.04)
+    ctx2 = ResearchContext(now=on_day, researcher=StubResearcher())   # VERDICT: NONE
     assert mod.forecast(mk(sampled, "KXMLBGAME"), ctx2) == pytest.approx(0.70)
 
 

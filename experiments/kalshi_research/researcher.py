@@ -32,7 +32,7 @@ class StubResearcher:
     validation probe can check a candidate is deterministic GIVEN its inputs."""
 
     name: str = "stub"
-    default: str = "NOTHING FOUND"
+    default: str = "VERDICT: NONE\nEVIDENCE: none found"
     answers: dict[str, str] = field(default_factory=dict)
     calls: int = 0
 
@@ -69,11 +69,40 @@ def claude_exe() -> str:
         "; a launchd job gets a minimal PATH, so set CLAUDE_EXE or add the path")
 
 
+# The research protocol is versioned and recorded in the researcher's name,
+# because it is part of the experimental setup exactly as the model is: answers
+# produced under different instructions are not comparable.
+#
+# v1 asked for "findings, or exactly NOTHING FOUND" and got prose. Measured
+# 2026-09-10 on the first eight live calls: the researcher answered a query
+# about injuries with "No sourced reports of injury, scratch, or postponement
+# affecting the active roster today" -- a NEGATION that restates the query's
+# own terms. A candidate matching substrings read that as a positive and faded
+# the favourite. Three of four fades were wrong that way. No keyword list fixes
+# it; free prose can always negate.
+#
+# v2 demands a verdict token the candidate can parse. A negation, an
+# unconfirmed report, a routine preview and silence all collapse to NONE.
+PROMPT_VERSION = "v2"
+
 PROMPT = (
-    "You are a research assistant for a forecaster. Search the web for the "
-    "following and reply with AT MOST 200 words of dated, sourced, factual "
-    "findings relevant to predicting the outcome. No advice, no probability. "
-    "If nothing relevant exists, reply exactly: NOTHING FOUND.\n\nQUERY: {query}"
+    "You are a research assistant for a forecaster. Search the web and answer "
+    "the QUERY below.\n\n"
+    "Reply in EXACTLY this form, VERDICT first, nothing before it:\n\n"
+    "VERDICT: NONE\n"
+    "EVIDENCE: <at most 120 words, each claim dated and sourced>\n\n"
+    "or\n\n"
+    "VERDICT: <the name of the side whose chances are REDUCED>\n"
+    "EVIDENCE: <at most 120 words, each claim dated and sourced>\n\n"
+    "VERDICT must be the single token NONE unless you found a SPECIFIC, DATED "
+    "report that changes the expected outcome of THIS event. All of these are "
+    "NONE: no news found; a report you could not confirm; a routine preview or "
+    "lineup listing; an injury to someone not involved in this event; a "
+    "historical or background note; anything you are inferring rather than "
+    "reading. Never restate the query's own words as though they were "
+    "findings. When in doubt, NONE.\n\n"
+    "No advice, no probability, no hedging outside EVIDENCE.\n\n"
+    "QUERY: {query}"
 )
 
 
@@ -117,7 +146,7 @@ class ClaudeResearcher:
                                timeout=20, check=False).stdout.strip().split()[0]
         except (OSError, subprocess.SubprocessError, IndexError):
             v = "unknown"
-        self.name = f"claude:{self.model or 'default'}:{v}"
+        self.name = f"claude:{self.model}:{v}:{PROMPT_VERSION}"
 
     def research(self, query: str) -> ResearchResult:
         exe = claude_exe()
