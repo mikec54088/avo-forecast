@@ -138,7 +138,7 @@ def run_pass(
     for c in exp.seed_candidates():
         try:
             cands.append((c, exp.load_candidate(c)))
-        except Exception as exc:  # noqa: BLE001 - one broken candidate must not stop the pass
+        except Exception as exc:
             print(f"  skip {c.candidate_id}: {exc!r}", flush=True)
 
     already = forecast_log.seen(root)
@@ -165,7 +165,7 @@ def run_pass(
                 p = float(mod.forecast(m, ctx))
                 if not (0.0 <= p <= 1.0):
                     err, p = f"forecast {p!r} outside [0,1]", m.implied_prob
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 err, p = f"raised {exc!r}"[:200], m.implied_prob
             stats["asked"] += 1
             stats["research_calls"] += ctx.calls

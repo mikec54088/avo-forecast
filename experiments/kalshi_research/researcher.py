@@ -6,12 +6,11 @@ regardless of which is wired in.
 """
 from __future__ import annotations
 
-import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 
+from avo.core.backends import resolve_cli
 from experiments.kalshi_research.types import ResearchResult
 
 
@@ -39,34 +38,6 @@ class StubResearcher:
     def research(self, query: str) -> ResearchResult:
         self.calls += 1
         return ResearchResult(query, self.answers.get(query, self.default), 0.0)
-
-
-# launchd gives a job PATH=/usr/bin:/bin:/usr/sbin:/sbin and nothing else, so
-# shutil.which("claude") returns None there and a bare "claude" fails to exec.
-# Measured 2026-09-10: every research call from the launchd runner failed this
-# way while the identical call from a shell succeeded. Same lesson as the
-# absolute `uv` path in scripts/launchd/*.plist -- resolve the binary, never
-# assume the environment. Raise loudly rather than exec a name that is not
-# there: a researcher that cannot run must not look like one that found
-# nothing.
-_CLAUDE_FALLBACKS = (
-    Path.home() / ".local" / "bin" / "claude",
-    Path("/opt/homebrew/bin/claude"),
-    Path("/usr/local/bin/claude"),
-)
-
-
-def claude_exe() -> str:
-    found = shutil.which("claude")
-    if found:
-        return found
-    for p in _CLAUDE_FALLBACKS:
-        if p.exists():
-            return str(p)
-    raise FileNotFoundError(
-        "claude CLI not found on PATH or in " +
-        ", ".join(str(p) for p in _CLAUDE_FALLBACKS) +
-        "; a launchd job gets a minimal PATH, so set CLAUDE_EXE or add the path")
 
 
 # The research protocol is versioned and recorded in the researcher's name,
@@ -140,7 +111,7 @@ class ClaudeResearcher:
             raise ValueError(
                 "ClaudeResearcher needs an explicit model (e.g. claude-sonnet-5); "
                 "the CLI default is a user setting and would break comparability")
-        exe = claude_exe()
+        exe = resolve_cli("claude")
         try:
             v = subprocess.run([exe, "--version"], capture_output=True, text=True,
                                timeout=20, check=False).stdout.strip().split()[0]
@@ -149,7 +120,7 @@ class ClaudeResearcher:
         self.name = f"claude:{self.model}:{v}:{PROMPT_VERSION}"
 
     def research(self, query: str) -> ResearchResult:
-        exe = claude_exe()
+        exe = resolve_cli("claude")
         argv = [exe, "-p", "--output-format", "text",
                 "--allowedTools", "WebSearch,WebFetch",
                 "--max-turns", str(self.max_turns)]

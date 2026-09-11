@@ -99,6 +99,52 @@ class SubprocessBackend:
         )
 
 
+# Where a CLI lives when PATH does not say. A launchd job gets
+# PATH=/usr/bin:/bin:/usr/sbin:/sbin and nothing else, so shutil.which() returns
+# None for anything installed in a user directory and a bare name fails to exec.
+# Measured 2026-09-10 on the kalshi_research runner: every invocation from the
+# launchd agent failed this way while the identical call from a shell worked,
+# and the agent still exited 0 -- the job ran, and did nothing. Resolve the
+# binary, never assume the environment.
+_CLI_DIRS = (
+    Path.home() / ".local" / "bin",
+    Path("/opt/homebrew/bin"),
+    Path("/usr/local/bin"),
+    Path("/usr/bin"),
+)
+
+
+def resolve_cli(name: str) -> str:
+    """Absolute path to a CLI, or raise saying why it could not be found.
+
+    Checks ``<NAME>_EXE`` first so a scheduled job can be told exactly what to
+    run, then PATH, then the usual install directories.
+
+    Raises rather than returning the bare name. A backend that cannot exec must
+    fail loudly at construction: returning something unrunnable turns one
+    missing binary into N identical "backend exited 1" lines with no cause in
+    them.
+    """
+    override = os.environ.get(f"{name.upper()}_EXE")
+    if override:
+        if not Path(override).exists():
+            raise FileNotFoundError(f"{name.upper()}_EXE={override!r} does not exist")
+        return override
+    found = shutil.which(name)
+    if found:
+        return found
+    for d in _CLI_DIRS:
+        candidate = d / name
+        if candidate.exists():
+            return str(candidate)
+    raise FileNotFoundError(
+        f"{name!r} CLI not found. PATH={os.environ.get('PATH', '')!r} and it is "
+        f"not in {', '.join(str(d) for d in _CLI_DIRS)}. A launchd job gets a "
+        f"minimal PATH -- set {name.upper()}_EXE, or give the plist an "
+        f"EnvironmentVariables PATH."
+    )
+
+
 def _version(executable: str) -> str:
     try:
         cp = subprocess.run([executable, "--version"], capture_output=True,
@@ -114,7 +160,7 @@ def claude_backend(model: str | None = None, extra: Sequence[str] = ()) -> Subpr
     --permission-mode acceptEdits lets it write the candidate without prompting;
     there is no human at the keyboard during a generation run.
     """
-    exe = shutil.which("claude") or "claude"
+    exe = resolve_cli("claude")
     argv = [exe, "-p", "--permission-mode", "acceptEdits"]
     if model:
         argv += ["--model", model]
@@ -123,7 +169,7 @@ def claude_backend(model: str | None = None, extra: Sequence[str] = ()) -> Subpr
 
 
 def grok_backend(extra: Sequence[str] = ()) -> SubprocessBackend:
-    exe = shutil.which("grok") or "grok"
+    exe = resolve_cli("grok")
     return SubprocessBackend(name=f"grok:{_version(exe)}", argv=[exe, "-p", *extra])
 
 

@@ -138,6 +138,47 @@ def test_a_valid_candidate_survives_a_sibling_being_rejected(cdir):
     assert not (cdir / "bad.py").exists()
 
 
+def test_resolve_cli_prefers_an_explicit_override(monkeypatch, tmp_path):
+    """A scheduled job should be able to say exactly what to run."""
+    from avo.core.backends import resolve_cli
+
+    exe = tmp_path / "claude"
+    exe.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("CLAUDE_EXE", str(exe))
+    assert resolve_cli("claude") == str(exe)
+
+    monkeypatch.setenv("CLAUDE_EXE", str(tmp_path / "missing"))
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        resolve_cli("claude")
+
+
+def test_resolve_cli_falls_back_to_known_install_dirs(monkeypatch, tmp_path):
+    """launchd gives PATH=/usr/bin:/bin:/usr/sbin:/sbin, so which() finds
+    nothing for a user-directory install. Measured 2026-09-10: every research
+    call from the launchd agent failed this way while the identical call from a
+    shell worked -- and the agent still exited 0."""
+    import avo.core.backends as B
+
+    monkeypatch.delenv("CLAUDE_EXE", raising=False)
+    monkeypatch.setattr(B.shutil, "which", lambda _: None)
+    exe = tmp_path / "claude"
+    exe.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(B, "_CLI_DIRS", (tmp_path,))
+    assert B.resolve_cli("claude") == str(exe)
+
+
+def test_resolve_cli_raises_rather_than_returning_an_unrunnable_name(monkeypatch, tmp_path):
+    """Returning the bare name turns one missing binary into N identical
+    "backend exited 1" lines with no cause in any of them."""
+    import avo.core.backends as B
+
+    monkeypatch.delenv("CLAUDE_EXE", raising=False)
+    monkeypatch.setattr(B.shutil, "which", lambda _: None)
+    monkeypatch.setattr(B, "_CLI_DIRS", (tmp_path / "nowhere",))
+    with pytest.raises(FileNotFoundError, match="minimal PATH"):
+        B.resolve_cli("claude")
+
+
 def test_backend_failures_are_reported_not_raised(cdir):
     assert not _run(cdir, {}, exit_code=1).accepted
     assert "timed out" in _run(cdir, {}, timed_out=True).reason
@@ -550,6 +591,7 @@ def test_scope_enforcement_does_not_revert_by_default(cdir):
     The proper fix is isolation, not cleanup: run the agent in a separate git
     worktree so it cannot reach the main tree at all."""
     import inspect
+
     from avo.core.generate import generate_once, revert_out_of_scope
 
     assert inspect.signature(generate_once).parameters["revert_scope"].default is False

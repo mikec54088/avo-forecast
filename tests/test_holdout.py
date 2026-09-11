@@ -18,7 +18,7 @@ class Obs:
         self.resolved_at = T0 + timedelta(days=days)
 
 
-KEY = lambda o: o.resolved_at  # noqa: E731
+KEY = lambda o: o.resolved_at
 
 
 def test_future_observations_are_eligible():
