@@ -131,19 +131,43 @@ def _row(m: MarketSnapshot) -> dict[str, object]:
     }
 
 
-def snapshot(max_close_hours: float | None = None) -> Path:
+def snapshot(
+    max_close_hours: float | None = None,
+    pass_name: str | None = None,
+    max_pages: int | None = None,
+) -> Path:
     """Append top-of-book for every quotable market.
 
     With `max_close_hours` the sweep is bounded to markets closing inside that
     window. That is not a sampling shortcut: every market passes through the
     window before it closes, so a bounded pass run often enough still captures
-    an entry price for everything that becomes scoreable. What it gives up is
-    long-horizon price history, which the unbounded pass preserves at a lower
-    cadence.
+    an entry price for everything that becomes scoreable.
+
+    `pass_name` ("full" or "near") picks the lock and the filename suffix, and
+    is DELIBERATELY independent of whether the sweep is bounded. They used to be
+    the same switch, which was fine only while "bounded" and "near" meant the
+    same thing. They stopped meaning the same thing on 2026-09-12, when the
+    unbounded full pass had to be bounded too: the open universe had grown to
+    6.5M market records over 6,530 pages and the sweep took 53-82 minutes
+    against an hourly schedule. Overrunning runs found the lock held and exited,
+    so the full pass silently degraded to roughly two-hourly. Almost all of that
+    growth is auto-generated MVE parlay combos -- 99.8% of the universe, of
+    which 0.01% carry a book -- so the cost bought nothing.
+
+    A bounded full pass keeps everything that becomes scoreable: p90 time to
+    close among resolved observations is 2.2 days, so a week's window has ample
+    headroom, and MAX_PRICE_HISTORY caps history at 24 points regardless. What
+    it gives up is price history on markets more than the window from closing,
+    which nothing has ever used.
     """
     bounded = max_close_hours is not None
-    lock_name = "snapshot_near" if bounded else "snapshot"
-    label = "-near" if bounded else ""
+    if pass_name is None:
+        pass_name = "near" if bounded else "full"
+    if pass_name not in ("full", "near"):
+        raise SystemExit(f"pass_name must be 'full' or 'near', not {pass_name!r}")
+    lock_name = "snapshot_near" if pass_name == "near" else "snapshot"
+    label = "-near" if pass_name == "near" else ""
+    page_cap = max_pages if max_pages is not None else BOUNDED_MAX_PAGES
     max_close_ts = (
         int((datetime.now(timezone.utc) + timedelta(hours=max_close_hours)).timestamp())
         if bounded else None
@@ -159,7 +183,7 @@ def snapshot(max_close_hours: float | None = None) -> Path:
                 status="open", max_close_ts=max_close_ts
             ):
                 pages += 1
-                if bounded and pages > BOUNDED_MAX_PAGES:
+                if bounded and pages > page_cap:
                     overran = True
                     break
                 seen += len(markets)
@@ -194,7 +218,7 @@ def snapshot(max_close_hours: float | None = None) -> Path:
         )
         if overran:
             print(
-                f"  !!! bounded sweep exceeded {BOUNDED_MAX_PAGES} pages -- max_close_ts "
+                f"  !!! bounded sweep exceeded {page_cap} pages -- max_close_ts "
                 f"may be being ignored. Check before this runs again; an ignored "
                 f"filter turns this into a full sweep every tick."
             )
@@ -375,9 +399,23 @@ def main() -> None:
         "--max-close-hours", type=float, default=None,
         help="snapshot only: bound the sweep to markets closing within N hours",
     )
+    ap.add_argument(
+        "--pass-name", choices=["full", "near"], default=None,
+        help="snapshot only: which pass this is, deciding the lock and the "
+             "filename suffix. Independent of --max-close-hours: the full pass "
+             "is bounded too since 2026-09-12. Defaults to near when bounded, "
+             "full when not, which is how it behaved before the two were split.",
+    )
+    ap.add_argument(
+        "--max-pages", type=int, default=None,
+        help="snapshot only: page guard for a bounded sweep (default "
+             f"{BOUNDED_MAX_PAGES}). Exists to catch max_close_ts silently "
+             "ceasing to filter, so set it a few times the observed page count.",
+    )
     args = ap.parse_args()
     if args.mode == "snapshot":
-        snapshot(max_close_hours=args.max_close_hours)
+        snapshot(max_close_hours=args.max_close_hours, pass_name=args.pass_name,
+                 max_pages=args.max_pages)
     else:
         settle(snapshot_days=args.snapshot_days)
 
