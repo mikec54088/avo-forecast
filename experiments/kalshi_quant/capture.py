@@ -29,9 +29,11 @@ overall book rate is an MVE artifact, not a property of real markets.
 from __future__ import annotations
 
 import argparse
+import glob
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from collections.abc import Iterator, Sequence
 from typing import Any, Self
 
 import pandas as pd
@@ -64,6 +66,32 @@ RESOLUTION_COLS = ["ticker", "series_ticker", "resolved_at", "outcome", "settlem
 # quietly become a full sweep every 15 minutes, roughly tripling our request
 # volume. Stop well short of that and say so loudly.
 BOUNDED_MAX_PAGES = 200
+
+# The series-scoped full pass. Sweeping /markets globally means fetching the
+# whole open universe to keep the sliver that has a book: measured 2026-09-12,
+# 8,324,898 market records over 8,325 pages in 83 minutes, of which 8,236,140
+# were skipped for having no two-sided book. It had grown past its own hourly
+# schedule, so overrunning runs found the lock held and the full pass silently
+# degraded to two-hourly.
+#
+# Bounding by close time does NOT fix it. The auto-generated MVE parlay combos
+# cluster in the SAME 1-7 day window as the real game markets -- a 168h bound
+# still saw 3,000,000 records -- so close_time cannot separate them. Measured:
+# a 48h bound finished in 5 minutes and left ONE researchable game market
+# against 30 unbounded.
+#
+# series_ticker can. It is a real server-side filter (verified 2026-09-12: a
+# bogus series returns zero markets, so it is not being silently ignored), and
+# settle() has depended on it in production since 2026-08-24. Cost scales with
+# the number of series we care about, not with how many parlays Kalshi
+# generates -- KXMLBGAME walks in 1 page and 0.4s.
+#
+# The universe is derived from recent snapshots rather than configured, so it
+# maintains itself. The NEAR pass is the discovery mechanism: it is unbounded
+# in series and sees everything closing within 24h, so a brand-new series shows
+# up there long before it can resolve, and the next full pass picks it up.
+SERIES_UNIVERSE_DAYS = 7.0
+SERIES_MAX_PAGES = 20
 
 
 def _write(df: pd.DataFrame, kind: str, label: str = "") -> Path:
@@ -131,10 +159,55 @@ def _row(m: MarketSnapshot) -> dict[str, object]:
     }
 
 
+def series_universe(days: float = SERIES_UNIVERSE_DAYS, root: Path | None = None) -> list[str]:
+    """Every series seen in snapshots from the last `days`.
+
+    Reads only the series_ticker column, so it is cheap even over a week of
+    files. Falls back to an empty list when nothing has been captured yet,
+    which callers must treat as "sweep globally" rather than "sweep nothing".
+    """
+    root = root or DATA_ROOT
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("date=%Y-%m-%d")
+    files = [f for f in sorted(glob.glob(str(root / "snapshots" / "date=*" / "*.parquet")))
+             if Path(f).parent.name >= cutoff]
+    seen: set[str] = set()
+    for f in files:
+        try:
+            seen.update(pd.read_parquet(f, columns=["series_ticker"])["series_ticker"].unique())
+        except (OSError, ValueError, KeyError):
+            continue
+    return sorted(x for x in seen if isinstance(x, str) and x)
+
+
+def _iter_series_pages(
+    client: KalshiClient, series: Sequence[str], max_pages_per_series: int
+) -> Iterator[tuple[list[dict[str, Any]], datetime]]:
+    """(markets, fetched_at) per page, series by series.
+
+    Same shape as client.iter_market_pages so the caller does not care which
+    walk it got. fetched_at is per page because a sweep spans minutes and
+    INVARIANT #1 keys off observation time.
+    """
+    for st in series:
+        cursor: str | None = None
+        for _ in range(max_pages_per_series):
+            page = client._get("/markets", status="open", limit=1000,
+                               series_ticker=st, cursor=cursor)
+            fetched_at = datetime.now(timezone.utc)
+            markets = page.get("markets", [])
+            if markets:
+                yield markets, fetched_at
+            cursor = page.get("cursor")
+            if not cursor or not markets:
+                break
+
+
 def snapshot(
     max_close_hours: float | None = None,
     pass_name: str | None = None,
     max_pages: int | None = None,
+    by_series: bool = False,
+    series: Sequence[str] | None = None,
 ) -> Path:
     """Append top-of-book for every quotable market.
 
@@ -172,6 +245,13 @@ def snapshot(
         int((datetime.now(timezone.utc) + timedelta(hours=max_close_hours)).timestamp())
         if bounded else None
     )
+    universe: list[str] = []
+    if by_series:
+        universe = list(series) if series is not None else series_universe()
+        if not universe:
+            print("no series universe yet (nothing captured); sweeping globally")
+            by_series = False
+
     with _Lock(lock_name):
         rows: list[dict[str, object]] = []
         seen = pages = no_book = unparsed = 0
@@ -179,11 +259,13 @@ def snapshot(
         overran = False
         started = datetime.now(timezone.utc)
         with KalshiClient() as client:
-            for markets, fetched_at in client.iter_market_pages(
-                status="open", max_close_ts=max_close_ts
-            ):
+            walk = (
+                _iter_series_pages(client, universe, SERIES_MAX_PAGES) if by_series
+                else client.iter_market_pages(status="open", max_close_ts=max_close_ts)
+            )
+            for markets, fetched_at in walk:
                 pages += 1
-                if bounded and pages > page_cap:
+                if bounded and not by_series and pages > page_cap:
                     overran = True
                     break
                 seen += len(markets)
@@ -209,7 +291,8 @@ def snapshot(
         path = _write(df, "snapshots", label)
         elapsed = (datetime.now(timezone.utc) - started).total_seconds()
         mve = int(df["is_mve"].sum()) if not df.empty else 0
-        scope = f"<={max_close_hours:g}h" if bounded else "all"
+        scope = (f"{len(universe)} series" if by_series
+                 else (f"<={max_close_hours:g}h" if bounded else "all"))
         print(
             f"[{scope}] {len(rows)} quotable markets ({mve} mve) from {seen} seen "
             f"over {pages} pages in {elapsed:.0f}s; {no_book} skipped for no "
@@ -407,6 +490,14 @@ def main() -> None:
              "full when not, which is how it behaved before the two were split.",
     )
     ap.add_argument(
+        "--by-series", action="store_true",
+        help="snapshot only: sweep series-by-series instead of walking the whole "
+             "open universe. Cost then scales with the series we care about "
+             "rather than with how many parlay combos Kalshi generates. The "
+             "series list is derived from recent snapshots, so it maintains "
+             "itself; the near pass is what discovers new ones.",
+    )
+    ap.add_argument(
         "--max-pages", type=int, default=None,
         help="snapshot only: page guard for a bounded sweep (default "
              f"{BOUNDED_MAX_PAGES}). Exists to catch max_close_ts silently "
@@ -415,7 +506,7 @@ def main() -> None:
     args = ap.parse_args()
     if args.mode == "snapshot":
         snapshot(max_close_hours=args.max_close_hours, pass_name=args.pass_name,
-                 max_pages=args.max_pages)
+                 max_pages=args.max_pages, by_series=args.by_series)
     else:
         settle(snapshot_days=args.snapshot_days)
 

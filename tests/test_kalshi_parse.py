@@ -124,3 +124,59 @@ def test_liquidity_is_documented_as_always_zero(raw_markets):
         assert float(raw["liquidity_dollars"]) == 0.0, (
             "liquidity is now populated; update types.py and this test"
         )
+
+
+# ------------------------------------------- the series-scoped full pass
+
+def test_series_universe_is_derived_from_recent_snapshots(tmp_path):
+    """Derived, not configured, so it maintains itself. The near pass is the
+    discovery mechanism: unbounded in series and seeing everything closing
+    within 24h, so a new series appears there before it can resolve."""
+    import pandas as pd
+
+    from experiments.kalshi_quant.capture import series_universe
+
+    old = tmp_path / "snapshots" / "date=2000-01-01"
+    new = tmp_path / "snapshots" / "date=2099-01-01"
+    old.mkdir(parents=True); new.mkdir(parents=True)
+    pd.DataFrame({"series_ticker": ["ANCIENT"]}).to_parquet(old / "a.parquet")
+    pd.DataFrame({"series_ticker": ["KXMLBGAME", "KXMLBGAME", "KXNFLGAME"]}).to_parquet(
+        new / "b.parquet")
+
+    u = series_universe(days=36500, root=tmp_path)
+    assert u == ["ANCIENT", "KXMLBGAME", "KXNFLGAME"]
+    assert series_universe(days=1, root=tmp_path) == ["KXMLBGAME", "KXNFLGAME"]
+    assert series_universe(days=1, root=tmp_path / "nothing") == []
+
+
+def test_series_pages_are_walked_per_series_and_stamped_per_page():
+    """Same shape as iter_market_pages so the caller does not care which walk
+    it got, and fetched_at is per page because a sweep spans minutes and
+    INVARIANT #1 keys off observation time."""
+    from experiments.kalshi_quant.capture import _iter_series_pages
+
+    calls = []
+
+    class FakeClient:
+        def _get(self, path, **kw):
+            calls.append((kw["series_ticker"], kw.get("cursor")))
+            if kw["series_ticker"] == "A":
+                return ({"markets": [{"t": 1}], "cursor": "c1"} if not kw.get("cursor")
+                        else {"markets": [{"t": 2}], "cursor": None})
+            return {"markets": [], "cursor": None}
+
+    pages = list(_iter_series_pages(FakeClient(), ["A", "B"], 20))
+    assert [len(m) for m, _ in pages] == [1, 1]
+    assert [c for _, c in calls] == [None, "c1", None]
+    assert {s for s, _ in calls} == {"A", "B"}
+    assert pages[0][1] <= pages[1][1]
+
+
+def test_series_walk_respects_its_page_cap():
+    from experiments.kalshi_quant.capture import _iter_series_pages
+
+    class Endless:
+        def _get(self, path, **kw):
+            return {"markets": [{"t": 1}], "cursor": "always-more"}
+
+    assert len(list(_iter_series_pages(Endless(), ["A"], 3))) == 3

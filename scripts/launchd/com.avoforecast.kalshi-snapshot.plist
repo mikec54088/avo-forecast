@@ -13,6 +13,9 @@
         <string>-m</string>
         <string>experiments.kalshi_quant.capture</string>
         <string>snapshot</string>
+        <string>--by-series</string>
+        <string>--pass-name</string>
+        <string>full</string>
     </array>
 
     <key>WorkingDirectory</key>
