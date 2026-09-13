@@ -114,6 +114,16 @@ Read this before proposing anything; most obvious ideas are already dead.
   calls were the agent characterising the dataset itself -- and, more
   importantly, made candidates' claims comparable: generation 3 quoted 6-12
   point edges measured privately, and no two could be checked against another.
+- **The full pass sweeps by SERIES, not globally** (`--by-series`, since
+  2026-09-12). Walking the whole open universe had grown to 9.4M records over
+  9,385 pages in 89 min and was outrunning its own hourly schedule; 99% of that
+  fetch was MVE parlay combos with no book. Bounding by close time does NOT
+  help -- the parlays sit in the same 1-7 day window as the real game markets,
+  so a 48h bound left 1 researchable game market against 30. `series_ticker` is
+  a real server-side filter (a bogus series returns zero) and separates them
+  cleanly. Measured back to back: 122,855 records / 4,142 pages / 22 min,
+  keeping 96% of quotable markets and MORE game markets than the global sweep.
+  Cost now scales with series we care about, not with Kalshi's parlay output.
 - **Not every event is mutually exclusive.** Nested ladders ("over 1.5 / 2.5 /
   3.5 goals") correctly sum above 1.0; `sibling_coherence` assumes exclusivity
   and is documented as flawed because of it.
