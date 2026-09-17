@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.avoforecast.kalshi-paper</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/hermesagent/miniconda3/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>-m</string>
+        <string>experiments.kalshi_quant.paper_runner</string>
+        <string>run</string>
+        <string>--contracts</string>
+        <string>100</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/hermesagent/.local/bin:/Users/hermesagent/miniconda3/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/hermesagent/development/avo-forecast</string>
+
+    <!-- Live paper trading. Runs two minutes after each near pass so the book
+         it decides on is ~2 min old, not the 46-minute median that REPLAY
+         scored against. Reads the snapshot from disk: zero API calls, no
+         money, no orders. It exists to close the three gaps replay cannot --
+         were you there, was the quote tradable, was the size available. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Minute</key><integer>2</integer></dict>
+        <dict><key>Minute</key><integer>17</integer></dict>
+        <dict><key>Minute</key><integer>32</integer></dict>
+        <dict><key>Minute</key><integer>47</integer></dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/paper.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/paper.log</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>

@@ -128,6 +128,28 @@ Read this before proposing anything; most obvious ideas are already dead.
   3.5 goals") correctly sum above 1.0; `sibling_coherence` assumes exclusivity
   and is documented as flawed because of it.
 
+### Standing decisions, 2026-09-17
+
+- **DO NOT TRADE REAL MONEY YET.** `unclimbed_favourite` is the first candidate
+  to pass the P&L gate on BOTH halves (+0.0769 selection / +0.0700
+  confirmation) and to survive the series, weekend, staleness and
+  matched-control checks -- the control, same band and spread without its path
+  gate, returns -0.0024 over 9,272 fills. But the confirmation half is 204
+  fills with a lower bound of +0.0055, it is 1 of 42 tested where ~2 false
+  positives are expected, and +7.5c is far outside the 1-3 point range every
+  other measured bias sits in. Waiting costs ~$326/day of paper profit; being
+  wrong costs real money. Wait for the confirmation fills to roughly double.
+- **STOP GENERATING CANDIDATES for now.** 42 tested, 1 survivor. Each further
+  candidate adds multiple-comparison risk that DILUTES the one real finding.
+  Deepening the evidence on the survivor beats widening the search. Resume when
+  the survivor is settled either way.
+- **Paper trading is live** (`paper_runner.py`, launchd at :02/:17/:32/:47) and
+  is the only thing that closes the gap replay cannot: were you there at the
+  entry instant, was the quote tradable, was the size available. REPLAY scored
+  entries at a median 46 minutes' staleness; paper decides on a ~2-minute book.
+  `PAPER_CANDIDATES` is a deliberate whitelist -- adding one is a claim that a
+  strategy has earned a live test.
+
 ### Open decisions
 
 - ~~**G2** — enforce the P&L gate in selection.~~ **DECIDED 2026-09-08** (commit
