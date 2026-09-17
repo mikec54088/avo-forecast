@@ -31,9 +31,9 @@ from __future__ import annotations
 import argparse
 import glob
 import os
+from collections.abc import Iterator, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from collections.abc import Iterator, Sequence
 from typing import Any, Self
 
 import pandas as pd

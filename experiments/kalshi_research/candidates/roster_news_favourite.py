@@ -43,6 +43,20 @@ THIS market's side -> shrink toward 0.5 by SHIFT. A verdict naming anyone else
 the favourite, but identifying the opponent from a title like "Atlanta wins"
 is guesswork, and a candidate that guesses has stopped being falsifiable.
 
+WHY THE FUNNEL WIDENED (2026-09-17). Eight days live produced 134 research
+calls and SIX actions. The verdicts were right -- 125 NONE, 9 naming a side, 6
+of those ours -- and the evidence when it fired was exactly what was wanted
+(Ohtani to the 15-day IL; an OU starting tackle doubtful; a Texas A&M QB's
+hamstring during the game). The problem was arithmetic, not quality: six
+actions in eight days is 267 days to the 200-fill gate, which is the
+unfalsifiable-by-construction failure this candidate's own docstring names
+below. So the gates that cost nothing in precision were opened: the 1-in-4
+ticker sample dropped (it was pure rate limiting), the price band widened to
+0.50-0.90, and the series allowlist extended to every game-winner series that
+both appears in the full pass and resolves. Expect roughly 15-20x the research
+calls. What did NOT change is the verdict logic -- a negation still parses as
+NONE, and a verdict naming the opponent is still an abstention.
+
 WHAT WOULD FALSIFY IT. A forward P&L interval including zero on the faded
 subset. It is also falsified, and more cheaply, if VERDICT is almost always
 NONE -- that would mean game-day roster news is not reachable inside this window
@@ -76,11 +90,18 @@ MANIFEST = {
 RESEARCH_SERIES = frozenset({
     "KXNCAAFGAME", "KXMLBGAME", "KXMLSGAME", "KXEPLGAME", "KXLALIGAGAME",
     "KXSERIEAGAME", "KXCS2GAME", "KXLOLGAME",
+    # Added 2026-09-17 with the rest of the widening: game-winner series that
+    # both appear in the full pass and resolve into scoreable entries.
+    "KXNPBGAME", "KXKBOGAME", "KXVALORANTGAME", "KXDOTA2GAME", "KXFIBAGAME",
+    "KXBRASILEIROGAME", "KXLIGAMXGAME", "KXUSLGAME", "KXEFLCHAMPIONSHIPGAME",
+    "KXSERIECGAME", "KXBRASILEIROBGAME", "KXR6GAME", "KXNCAAMSOCCERGAME",
+    "KXARGNACBGAME", "KXETTANGAME", "KXECULPGAME", "KXURYPDGAME",
+    "KXEREDIVISIEGAME", "KXLVAVIRGAME",
 })
-MIN_PRICE, MAX_PRICE = 0.55, 0.85
+MIN_PRICE, MAX_PRICE = 0.50, 0.90
 MAX_SPREAD = 0.04
 SPREAD_TOL = 1e-9
-SAMPLE_1_IN = 4
+SAMPLE_1_IN = 1          # widened from 4 on 2026-09-17; see WHY THE FUNNEL WIDENED
 SHIFT = 0.04
 GAME_DAY_START_UTC = 6
 EPS = 0.001

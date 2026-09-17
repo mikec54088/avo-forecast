@@ -308,6 +308,63 @@ def test_pnl_se_is_not_inflated_by_singleton_series():
     assert se_new < se_old / 2
 
 
+def test_fee_follows_kalshis_published_taker_schedule():
+    """Replaces a flat 1c placeholder that carried a TODO since 2026-08-23. The
+    flat rate was wrong in the direction that flatters results: the real charge
+    peaks near 0.50 and only drops below 1c out in the tails."""
+    from experiments.kalshi_quant.scoring import (
+        fee_per_contract_cents,
+        trading_fee_dollars,
+    )
+
+    # 0.07 * 100 * 0.72 * 0.28 = 1.4112 -> rounded UP to the cent
+    assert trading_fee_dollars(0.72, 100) == pytest.approx(1.42)
+    assert fee_per_contract_cents(0.72, 100) == pytest.approx(1.42)
+
+    # peaks at the midpoint, symmetric about it, cheap in the tails
+    mid = fee_per_contract_cents(0.50, 1000)
+    assert mid > fee_per_contract_cents(0.20, 1000)
+    assert mid > fee_per_contract_cents(0.80, 1000)
+    assert fee_per_contract_cents(0.30, 1000) == pytest.approx(
+        fee_per_contract_cents(0.70, 1000), rel=1e-9)
+    assert fee_per_contract_cents(0.05, 1000) < 1.0 < mid
+
+    assert trading_fee_dollars(0.5, 0) == 0.0
+
+
+def test_fee_rounding_is_per_order_so_small_fills_pay_more():
+    """The cent is rounded up once per ORDER, so a 1-contract fill pays the
+    whole cent. That penalises tiny fills, which is realistic."""
+    from experiments.kalshi_quant.scoring import fee_per_contract_cents
+
+    assert fee_per_contract_cents(0.72, 1) > fee_per_contract_cents(0.72, 100)
+    assert fee_per_contract_cents(0.72, 1) == pytest.approx(2.0)
+
+
+def test_simulate_fill_charges_the_real_fee_on_the_crossed_price():
+    """INVARIANT #4: the fee applies to the price we actually cross at, never
+    the midpoint, and a fill is never free."""
+    from datetime import datetime, timedelta, timezone
+
+    from experiments.kalshi_quant.scoring import fee_per_contract_cents, simulate_fill
+    from experiments.kalshi_quant.types import MarketSnapshot
+
+    now = datetime(2026, 9, 17, tzinfo=timezone.utc)
+    m = MarketSnapshot("T", "E", "S", "t", now, now + timedelta(hours=1),
+                       yes_bid=0.70, yes_ask=0.72, last_price=0.71,
+                       volume=100.0, open_interest=50.0,
+                       yes_bid_size=4000.0, yes_ask_size=4000.0)
+
+    f = simulate_fill(m, "yes", 100)
+    assert f.filled and f.contracts == 100
+    assert f.price_cents == pytest.approx(72.0 + fee_per_contract_cents(0.72, 100))
+    assert f.price_cents > m.yes_ask_cents > m.implied_prob * 100
+
+    # the NO side crosses at 1 - bid, and is charged on that price
+    n = simulate_fill(m, "no", 100)
+    assert n.price_cents == pytest.approx(30.0 + fee_per_contract_cents(0.30, 100))
+
+
 def test_pnl_gate_passes_only_on_a_clustered_interval_above_zero():
     """Requiring the mean alone would pass noise. On 2026-08-31 the 20-90 min
     band had a positive mean whose series-clustered interval spanned zero."""

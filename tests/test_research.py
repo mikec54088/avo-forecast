@@ -325,6 +325,54 @@ def test_the_model_is_recorded_on_every_logged_forecast(tmp_path):
     assert (forecast_log.read(tmp_path)["researcher"] == "stub:pinned").all()
 
 
+def test_a_pass_research_budget_defers_overflow_rather_than_consuming_it(tmp_path):
+    """Widening the gates on 2026-09-17 took one pass from ~4 research calls to
+    34; at ~50s each a burst would overrun the hourly schedule and hold the
+    lock. Overflow must be RETRIED, not logged as a cheap abstention -- which
+    is what the research_failed defer path already does."""
+    from avo.core.types import Candidate
+    from experiments.kalshi_research.researcher import BudgetedResearcher, StubResearcher
+
+    class Researches:
+        MANIFEST: ClassVar[dict] = {"candidate_id": "r"}
+        def forecast(self, m, c):
+            c.research("anything")
+            return m.implied_prob
+
+    class FakeExp:
+        def seed_candidates(self):
+            return [Candidate("r", "kalshi_research", 0, None, NOW, "x", "")]
+        def load_candidate(self, c):
+            return Researches()
+
+    inner = StubResearcher()
+    budgeted = BudgetedResearcher(inner, budget=2)
+    _, st = run_pass(budgeted, _snapshot(5, close_in_h=48.0), now=NOW,
+                     root=tmp_path, experiment=FakeExp())
+
+    assert inner.calls == 2, "the inner researcher must be called only twice"
+    assert budgeted.refused == 3
+    assert st["research_calls"] == 2
+    # the 2 that researched are done; the 3 refused were deferred, not logged
+    assert st["forecasts"] == 2 and st["deferred"] == 3
+    assert len(forecast_log.read(tmp_path)) == 2
+
+    # next pass, fresh budget: the deferred three are picked up
+    budgeted2 = BudgetedResearcher(StubResearcher(), budget=10)
+    _, st2 = run_pass(budgeted2, _snapshot(5, close_in_h=48.0),
+                      now=NOW + timedelta(minutes=60), root=tmp_path,
+                      experiment=FakeExp())
+    assert st2["research_calls"] == 3 and st2["forecasts"] == 3
+
+
+def test_the_budget_wrapper_reports_the_inner_researchers_name():
+    """The log records which model produced each row; wrapping must not hide it."""
+    from experiments.kalshi_research.researcher import BudgetedResearcher, StubResearcher
+
+    b = BudgetedResearcher(StubResearcher(name="stub:pinned"), budget=1)
+    assert b.name == "stub:pinned"
+
+
 # ---------------------------------------------------- the research candidate
 
 def test_research_candidate_gates_research_on_the_game_date(tmp_path):

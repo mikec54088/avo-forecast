@@ -25,6 +25,8 @@
         <string>1</string>
         <string>--max-markets</string>
         <string>50000</string>
+        <string>--max-research-per-pass</string>
+        <string>25</string>
     </array>
 
     <!-- launchd gives a job PATH=/usr/bin:/bin:/usr/sbin:/sbin and nothing

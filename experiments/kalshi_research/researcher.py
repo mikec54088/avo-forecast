@@ -54,6 +54,39 @@ class StubResearcher:
 #
 # v2 demands a verdict token the candidate can parse. A negation, an
 # unconfirmed report, a routine preview and silence all collapse to NONE.
+@dataclass
+class BudgetedResearcher:
+    """Caps research calls for one PASS, wrapping any other researcher.
+
+    Beyond the cap it returns an ERROR rather than empty text, which is the
+    whole point: run_pass already defers a market whose research failed instead
+    of consuming it, so the overflow is retried next pass rather than logged as
+    a cheap abstention. Widening roster_news_favourite's gates on 2026-09-17
+    took one pass from ~4 research calls to 34, and a burst at ~50s each would
+    otherwise overrun the hourly schedule and hold the lock.
+
+    `calls` stays 0 on a refusal so a refused market does not burn its
+    per-market budget either.
+    """
+
+    inner: object
+    budget: int
+    used: int = 0
+    refused: int = 0
+    name: str = ""
+
+    def __post_init__(self) -> None:
+        self.name = getattr(self.inner, "name", "unknown")
+
+    def research(self, query: str) -> ResearchResult:
+        if self.used >= self.budget:
+            self.refused += 1
+            return ResearchResult(query, "", 0.0, calls=0,
+                                  error=f"pass research budget {self.budget} exhausted")
+        self.used += 1
+        return self.inner.research(query)
+
+
 PROMPT_VERSION = "v2"
 
 PROMPT = (

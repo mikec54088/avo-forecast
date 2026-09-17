@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from experiments.kalshi_quant.observations import DATA_ROOT, Entry
-from experiments.kalshi_quant.scoring import FEE_PER_CONTRACT_CENTS, simulate_fill
+from experiments.kalshi_quant.scoring import FEE_RATE, simulate_fill
 
 CACHE = DATA_ROOT / "digest.json"
 BANDS = [(0.0, 0.05), (0.05, 0.20), (0.20, 0.35), (0.35, 0.50),
@@ -91,7 +91,9 @@ def build(entries: Sequence[Entry]) -> Digest:
     a("PRICE BANDS. actual-mid is how far the outcome sat above the market's "
       "own price; it is the whole favourite-longshot story and it is already "
       "spent. P&L is what a naive 'buy this band' would have returned after "
-      f"crossing the spread and paying {FEE_PER_CONTRACT_CENTS:.0f}c:")
+      f"crossing the spread and paying Kalshi's taker fee "
+      f"({FEE_RATE:.0%} x price x (1-price), so ~1.8c near 0.50 and under 1c "
+      f"in the tails):")
     a(f"  {'band':<14}{'n':>8}{'actual-mid':>12}{'mkt Brier':>11}{'naive P&L':>11}{'fills':>8}")
     for lo, hi in BANDS:
         es = [e for e in entries if lo <= e.market.implied_prob < hi]

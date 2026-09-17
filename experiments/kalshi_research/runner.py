@@ -49,7 +49,7 @@ import pandas as pd
 from experiments.kalshi_quant.observations import _row_to_snapshot
 from experiments.kalshi_quant.types import MarketSnapshot
 from experiments.kalshi_research import forecast_log
-from experiments.kalshi_research.researcher import make
+from experiments.kalshi_research.researcher import BudgetedResearcher, make
 from experiments.kalshi_research.types import (
     DEFAULT_BUDGET,
     ResearchContext,
@@ -209,7 +209,14 @@ def main() -> None:
     ap.add_argument("--final-hours", type=float, default=1.0,
                     help="an abstention is logged once inside this many hours of close")
     ap.add_argument("--max-markets", type=int, default=3000)
-    ap.add_argument("--budget", type=int, default=DEFAULT_BUDGET)
+    ap.add_argument("--budget", type=int, default=DEFAULT_BUDGET,
+                    help="research calls per MARKET (default %(default)s)")
+    ap.add_argument("--max-research-per-pass", type=int, default=25,
+                    help="research calls per PASS (default %(default)s). A pass "
+                         "runs hourly and a call takes ~50s, so this is the "
+                         "guard against a burst overrunning the schedule and "
+                         "holding the lock. Overflow markets are DEFERRED and "
+                         "retried next pass, not consumed.")
     args = ap.parse_args()
 
     snap = latest_snapshot(args.source)
@@ -224,7 +231,9 @@ def main() -> None:
     with _Lock(forecast_log.DATA_ROOT):
         started = datetime.now(timezone.utc)
         df = pd.read_parquet(snap)
-        path, st = run_pass(make(args.researcher, args.model), df,
+        researcher = BudgetedResearcher(make(args.researcher, args.model),
+                                        args.max_research_per_pass)
+        path, st = run_pass(researcher, df,
                             max_close_hours=args.max_close_hours,
                             max_markets=args.max_markets, budget=args.budget,
                             final_hours=args.final_hours)
@@ -235,6 +244,9 @@ def main() -> None:
               f"{st['skipped_seen']} done earlier, {st['errors']} errors, "
               f"{st['research_calls']} research calls "
               f"({st['research_failed']} FAILED) in {elapsed:.0f}s -> {path}")
+        if researcher.refused:
+            print(f"      pass research budget {args.max_research_per_pass} spent; "
+                  f"{researcher.refused} market(s) deferred to the next pass")
         if st["research_failed"]:
             print(f"      WARNING: {st['research_failed']} research call(s) failed. "
                   "Those markets were deferred, not scored. Check credits/network.")
