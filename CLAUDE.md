@@ -128,6 +128,13 @@ Read this before proposing anything; most obvious ideas are already dead.
   3.5 goals") correctly sum above 1.0; `sibling_coherence` assumes exclusivity
   and is documented as flawed because of it.
 
+- **Ladders inflate paper P&L and real exposure.** 80 of 296 paper trades were
+  rungs of five Nasdaq-100 events (sixteen strikes ten points apart, one close
+  settles all). Unclustered that read +0.0860 [+0.0488,+0.1233]; series-
+  clustered it is [-0.0020,+0.1741] and spans zero. Always read paper P&L via
+  `paper_log.pnl_summary`, never a bare mean, and size per EVENT -- at 100
+  contracts a signal the old sizing put 1,600 on a single index close.
+
 ### Standing decisions, 2026-09-17
 
 - **DO NOT TRADE REAL MONEY YET.** `unclimbed_favourite` is the first candidate
