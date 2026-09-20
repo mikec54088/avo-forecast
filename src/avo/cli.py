@@ -198,7 +198,7 @@ def _entries(args) -> None:
 
 def _evolve(args) -> None:
     """Phase 5. Generate, score, select, checkpoint, repeat."""
-    from avo.core.loop import ready_to_rank, run_generation, score_all
+    from avo.core.loop import pool_changed, ready_to_rank, run_generation, score_all
     from avo.core.memory import RunMemory, new_run_id
     from avo.core.selection import SelectionPolicy
 
@@ -209,7 +209,11 @@ def _evolve(args) -> None:
     controls = [c.candidate_id for c in exp.seed_candidates()
                 if c.meta.get("role") == "control"]
     # G2, decided 2026-09-08: a candidate proven to lose money is not a parent.
-    from experiments.kalshi_quant.experiment import pnl_strength, pnl_verdict
+    from experiments.kalshi_quant.experiment import (
+        PNL_GATE_MIN_FILLS,
+        pnl_strength,
+        pnl_verdict,
+    )
     cdir = repo_root / "experiments" / args.experiment / "candidates"
     factory = BACKENDS[args.backend]
     backend = factory(args.model) if args.backend == "claude" else factory()
@@ -233,11 +237,33 @@ def _evolve(args) -> None:
                 "would breed from noise. Wait for markets to resolve, or pass "
                 "--force knowingly."
             )
+        policy = SelectionPolicy(
+            exclude=controls, gate=pnl_verdict, strength=pnl_strength,
+            # The explore slot wants candidates too YOUNG to judge, not ones
+            # measured flat. Both are GATE_UNPROVEN; only the fill count
+            # separates them, and only the experiment knows what a fill is.
+            maturity=lambda s: s.secondary.get("pnl_n_fills", float("nan")),
+            maturity_floor=PNL_GATE_MIN_FILLS)
+
+        # Generate on evidence, not on the calendar. Verdicts arrive in weeks
+        # and generations ran in days, so the loop kept re-deriving the same
+        # parents -- generations 3 and 4 chose an identical pair -- and spent a
+        # full agentic session each time to do it.
+        changed, why = pool_changed(policy, current, memory)
+        if not changed and not args.force:
+            print(f"  generation {g} skipped: {why}.\n"
+                  "  Parents would be identical to the last generation, so this "
+                  "would spend a session\n  re-deriving them. Wait for markets "
+                  "to resolve, or pass --force knowingly.")
+            break
+        print(f"  pool: {why}")
+
+        # `current` is passed through: run_generation used to score everything a
+        # SECOND time, a full pass over the entries table for no new information.
         rec = run_generation(exp, backend, memory, cdir, repo_root, g, args.n,
-                             SelectionPolicy(exclude=controls, gate=pnl_verdict,
-                                             strength=pnl_strength),
-                             entries, history,
-                             timeout_s=args.timeout, watch_paths=watch)
+                             policy, entries, history,
+                             timeout_s=args.timeout, watch_paths=watch,
+                             prior=current)
         print(f"  generation {g}: {rec.notes}")
         print(f"  checkpointed -> runs/{run_id}/gen{g:03d}.json")
 

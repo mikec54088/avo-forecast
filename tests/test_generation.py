@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -597,3 +598,81 @@ def test_scope_enforcement_does_not_revert_by_default(cdir):
     assert inspect.signature(generate_once).parameters["revert_scope"].default is False
     assert (inspect.signature(revert_out_of_scope)
             .parameters["delete_untracked"].default is False)
+
+
+# ------------------------------------------------- quota is not a candidate fault
+
+class _FakeExperiment:
+    name = "fake"
+
+    def seed_candidates(self):
+        return []
+
+    def variation_prompt(self, parent, prior):
+        return "write a candidate"
+
+
+def _run_generation_with(monkeypatch, tmp_path, fake_generate_once, n):
+    """Drive run_generation with a stubbed backend and no scoring."""
+    from avo.core import loop as loop_mod
+    from avo.core.memory import RunMemory
+    from avo.core.selection import SelectionPolicy
+
+    monkeypatch.setattr(loop_mod, "generate_once", fake_generate_once)
+    memory = RunMemory("fake-run", root=tmp_path)
+    return loop_mod.run_generation(
+        _FakeExperiment(), SimpleNamespace(name="fake"), memory,
+        tmp_path / "candidates", tmp_path, generation=1, n_candidates=n,
+        policy=SelectionPolicy(), entries=[], history=None, prior=[])
+
+
+def test_quota_exhaustion_is_distinguished_from_a_bad_candidate():
+    """The CLI exits 1 for a bad prompt and 1 for an exhausted window alike, so
+    only the reason string can tell them apart."""
+    from avo.core.generate import is_quota_exhausted
+    assert is_quota_exhausted(
+        "backend exited 1: You've hit your session limit \u00b7 resets 11:50pm")
+    assert is_quota_exhausted("backend exited 1: Credit balance too low")
+    assert is_quota_exhausted("BACKEND EXITED 1: USAGE LIMIT REACHED")
+    # ...and an ordinary rejection is not quota.
+    assert not is_quota_exhausted(
+        "forecast() never deviates from implied_prob across 204 real markets")
+    assert not is_quota_exhausted("no candidate file was written")
+    assert not is_quota_exhausted("backend timed out after 1800s")
+    assert not is_quota_exhausted("")
+
+
+def test_a_generation_stops_instead_of_burning_the_rest_of_the_batch(
+        monkeypatch, tmp_path):
+    """Generations 3 and 4 each spent seven further invocations against an
+    exhausted window, ~30s apart, every one rejected identically, and recorded
+    0/8 and 1/8 as though the agent had written bad candidates. It was never
+    asked."""
+    calls = []
+
+    def fake(backend, experiment, prompt, cdir, root, **kw):
+        calls.append(prompt)
+        return SimpleNamespace(
+            accepted=False,
+            reason="backend exited 1: You've hit your session limit, resets 10:20am",
+            kept_paths=(), kept_path="")
+
+    rec = _run_generation_with(monkeypatch, tmp_path, fake, n=8)
+    assert len(calls) == 1, f"kept invoking after quota ran out: {len(calls)} calls"
+    assert rec.candidate_ids == []
+    assert "out of budget" in rec.notes
+
+
+def test_an_ordinary_rejection_does_not_stop_the_batch(monkeypatch, tmp_path):
+    """Only quota aborts. A candidate that merely fails validation must not
+    cost the generation its remaining slots."""
+    calls = []
+
+    def fake(backend, experiment, prompt, cdir, root, **kw):
+        calls.append(prompt)
+        return SimpleNamespace(accepted=False, reason="forecast() never deviates",
+                               kept_paths=(), kept_path="")
+
+    rec = _run_generation_with(monkeypatch, tmp_path, fake, n=4)
+    assert len(calls) == 4
+    assert "out of budget" not in rec.notes

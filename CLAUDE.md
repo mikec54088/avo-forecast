@@ -151,6 +151,54 @@ Read this before proposing anything; most obvious ideas are already dead.
   passers, against 34% for `tick_grid_conditioned`, the candidate the old sort
   picked.
 
+- **The loop was circling, and three separate things caused it** (measured
+  2026-09-20, all fixed the same day). Six generations produced 11 candidates
+  and 8 of those came from generation 1; generations 3 and 4 chose the
+  IDENTICAL parent pair. (1) Quota: `-n 8` hit the session limit on attempt 2
+  and then burned six more invocations against the same wall, recorded as
+  0/8 and 1/8 "rejected" as though the agent had written badly. It was never
+  asked -- `is_quota_exhausted()` now aborts the batch. (2) Exploit-only
+  parents: a candidate needs ~200 fills and 1-2 weeks to get a verdict, while
+  generations run in days, so a candidate written in generation N is still
+  unproven at N+1, N+2, N+3 and can NEVER be bred from. One slot now explores
+  (`choose_explore`). (3) Cadence: generating on the calendar re-derived the
+  same parents and spent a full agentic session doing it; `pool_changed()`
+  now requires a new candidate or a moved verdict.
+- **GATE_UNPROVEN means two opposite things.** "Too few fills to judge" and
+  "measured, and indistinguishable from zero" share a verdict and want
+  opposite treatment. The first explore slot ranked the whole unproven pool by
+  fitness and picked `spread_scaled_shoulder` on 30,667 fills and
+  `favourite_longshot`, whose edge is recorded as having failed to replicate --
+  answered questions, not open ones. `SelectionPolicy.maturity` /
+  `maturity_floor` separate them; core never learns what a fill is.
+
+### Potential direction: an INVENTION slot (not built, revisit)
+
+**Nothing the loop has ever produced is unparented.** Every candidate from
+2026-09-05 onward is a variant, and the entire productive lineage descends from
+just two Phase-4 ideas, `volume_weighted` and `last_trade_blend`, plus
+`control_middle_only`. `variation_prompt` takes a parent; there is no code path
+to a founder. Lineage depth has never exceeded 3, and two of the five depth-3
+candidates were hand-written.
+
+Deferred 2026-09-20, deliberately, with the reasoning recorded so it is not
+re-litigated from scratch:
+
+- The case FOR is diversification, not yield. A two-idea root stock is fragile.
+- The case AGAINST on current evidence: 09-01's 16 founders produced 1 gate
+  passer (6%); generation 1's 8 variants produced 5 (62%). Variation is
+  outperforming invention tenfold. That comparison IS confounded -- those
+  founders predate the dataset digest and the loop's memory of failures, so
+  they were written blind -- but it is the only evidence there is.
+- A third slot costs +50% quota per generation, and quota is what killed
+  generations 3 and 4 outright. Do not add it before the abort fix is proven.
+- Novelty must be MEASURED, not asserted: check the overlap of markets a
+  founder fires on against every existing candidate, and reject it as a
+  rediscovery if they substantially coincide. The same overlap instrument the
+  portfolio section needs for correlation sizing.
+- **The agent must author founders, not Claude-in-session.** A session that has
+  read confirmation-half numbers cannot write an uncontaminated candidate.
+
 ### The goal is a PORTFOLIO, not a winner
 
 Real trading runs several candidates at once. That has three consequences the

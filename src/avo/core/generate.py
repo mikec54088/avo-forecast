@@ -218,6 +218,33 @@ def external_writes(paths: Sequence[str | Path], since: float) -> list[str]:
     return sorted(out)
 
 
+# Substrings that mean the ACCOUNT is out of budget, not that this candidate
+# failed. Generations 3 and 4 each burned seven further invocations against an
+# exhausted window -- every one rejected identically, ~30 seconds apart -- and
+# recorded 0/8 and 1/8 as though the agent had written bad candidates. It had
+# not been asked. Retrying cannot succeed until the window resets, so the
+# generation must stop rather than spend the remaining slots proving it.
+QUOTA_MARKERS = (
+    "session limit",
+    "usage limit",
+    "rate limit",
+    "quota",
+    "credit balance",
+    "insufficient credit",
+)
+
+
+def is_quota_exhausted(reason: str) -> bool:
+    """Does this rejection mean the account is out of budget?
+
+    Matched on the reason string because that is all the backend gives us: the
+    CLI exits 1 for a bad prompt and 1 for an exhausted window alike, so the
+    exit code cannot distinguish them.
+    """
+    low = (reason or "").lower()
+    return any(m in low for m in QUOTA_MARKERS)
+
+
 @dataclass(frozen=True)
 class Attempt:
     """One invocation, whatever happened."""

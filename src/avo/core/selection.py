@@ -157,6 +157,8 @@ class SelectionPolicy:
         exclude: Sequence[str] = (),
         gate: Callable[[Score], tuple[int, str]] | None = None,
         strength: Callable[[Score], float] | None = None,
+        maturity: Callable[[Score], float] | None = None,
+        maturity_floor: float | None = None,
     ):
         self.require_positive = require_positive
         self.min_observations = min_observations
@@ -180,6 +182,29 @@ class SelectionPolicy:
         # INVARIANT #2 is untouched: skill remains the fitness, and still
         # orders candidates sharing both a verdict and a strength.
         self.strength = strength
+        self.maturity = maturity
+        self.maturity_floor = maturity_floor
+
+    def _immature(self, s: Score) -> bool:
+        """Is this candidate unproven because it is YOUNG, not because it is flat?
+
+        GATE_UNPROVEN conflates two states that want opposite treatment: "too
+        few observations to judge" and "measured, and indistinguishable from
+        zero". Ranking the whole unproven pool by fitness picks the second
+        kind -- on generation 6 it chose spread_scaled_shoulder on 30,667
+        fills, and favourite_longshot, whose 3-4.5 point edge is recorded as
+        having failed to replicate. Those are answered questions, not open
+        ones, and the explore slot exists for open ones.
+
+        Core stays ignorant of what the evidence IS (INVARIANT #3): the
+        experiment supplies the count and the floor its own gate uses.
+        """
+        if self.maturity is None or self.maturity_floor is None:
+            return True
+        v = self.maturity(s)
+        if v != v:                                    # NaN: no evidence at all
+            return True
+        return v < self.maturity_floor
 
     def _strength(self, s: Score) -> float:
         if self.strength is None:
@@ -230,6 +255,34 @@ class SelectionPolicy:
                 continue
             out.append(s)
         return out
+
+    def verdict(self, s: Score) -> int:
+        """This candidate's gate verdict, for callers comparing pools."""
+        return self._gate(s)
+
+    def choose_explore(self, scored: Sequence[Score], k: int) -> list[Score]:
+        """Best k candidates the gate has NOT yet judged.
+
+        The exploit sort puts every proven candidate above every unproven one,
+        which is right for picking a winner and wrong as the only rule. A
+        candidate needs ~200 fills before the gate says anything, and that
+        takes one to two weeks of forward data, while generations run in days.
+        So a candidate written in generation N is still unproven at N+1, N+2,
+        N+3 and cannot be bred from -- measured 2026-09-20, every candidate
+        from 09-05 onward is a variant and no lineage has ever reached depth 4.
+        The loop re-selects the same aging pool and calls it evolution.
+
+        Reserving a slot here is the fix: it breeds from the most promising
+        UNJUDGED candidate, which is the only way a young line ever deepens.
+        Ordered by fitness, because for these the gate has no opinion yet and
+        INVARIANT #2 is the tiebreak of record. Proven LOSERS are still
+        excluded -- eligible() drops them -- so this explores what is unknown,
+        not what is known bad.
+        """
+        pool = [s for s in self.eligible(scored)
+                if self._gate(s) == GATE_UNPROVEN and self._immature(s)]
+        pool.sort(key=lambda s: (-s.primary, -s.n_observations))
+        return pool[:k]
 
     def choose_parents(self, scored: Sequence[Score], k: int) -> list[Score]:
         """Best k by (gate verdict, gate strength, fitness, observations).

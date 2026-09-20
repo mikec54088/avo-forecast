@@ -23,7 +23,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from avo.core.generate import generate_once
+from avo.core.generate import generate_once, is_quota_exhausted
 from avo.core.memory import GenerationRecord, RunMemory
 from avo.core.selection import SelectionPolicy, Verdict, confirm
 from avo.core.types import Score
@@ -98,6 +98,42 @@ def ready_to_rank(
     return bool(scored) and max(scored) >= minimum
 
 
+def pool_signature(policy: SelectionPolicy, scored: Sequence[Score]) -> dict[str, int]:
+    """Each candidate's gate verdict -- what selection would actually act on."""
+    return {s.candidate_id: policy.verdict(s) for s in scored}
+
+
+def pool_changed(
+    policy: SelectionPolicy, scored: Sequence[Score], memory: RunMemory
+) -> tuple[bool, str]:
+    """Has any verdict moved since the last generation?
+
+    Generating on a calendar rather than on evidence re-derives the same
+    parents and spends a full agentic session to do it: generations 3 and 4
+    chose the identical pair, and five consecutive generations produced three
+    candidates between them. A generation is only worth its quota when the
+    pool it selects from has actually changed -- a new candidate appearing, or
+    an existing one crossing a verdict boundary.
+    """
+    gens = memory.generations()
+    if not gens:
+        return True, "first generation"
+    prev_scores = [Score(**{k: (tuple(v) if k == "primary_ci" else v)
+                            for k, v in d.items()})
+                   for d in gens[-1].scores]
+    before = pool_signature(policy, prev_scores)
+    after = pool_signature(policy, scored)
+    if not before:
+        return True, "no prior scores recorded"
+    new_ids = set(after) - set(before)
+    if new_ids:
+        return True, f"{len(new_ids)} new candidate(s) scored"
+    moved = [c for c in after if before.get(c) != after[c]]
+    if moved:
+        return True, f"{len(moved)} verdict(s) changed: {', '.join(sorted(moved)[:3])}"
+    return False, "no candidate is new and no verdict has moved"
+
+
 def run_generation(
     experiment,
     backend,
@@ -111,19 +147,35 @@ def run_generation(
     history,
     timeout_s: int = 900,
     watch_paths: Sequence[str | Path] | None = None,
+    prior: Sequence[Score] | None = None,
+    n_explore: int = 1,
 ) -> GenerationRecord:
     """Generate a batch, score everything, checkpoint."""
     started = datetime.now(timezone.utc)
-    prior = score_all(experiment, entries, history, subset="selection")
-    parents = policy.choose_parents(prior, k=max(1, n_candidates // 4))
+    if prior is None:
+        prior = score_all(experiment, entries, history, subset="selection")
+    exploit = policy.choose_parents(prior, k=max(1, n_candidates // 4))
+
+    # One slot explores. See SelectionPolicy.choose_explore: the exploit sort
+    # ranks every proven candidate above every unproven one, so with verdicts
+    # arriving in weeks and generations running in days, a newly written
+    # candidate can never be bred from and no line deepens.
+    explore = policy.choose_explore(prior, k=n_explore) if n_candidates > 1 else []
+    explore = [e for e in explore
+               if e.candidate_id not in {x.candidate_id for x in exploit}]
+    parents = exploit + explore
     by_id = {c.candidate_id: c for c in experiment.seed_candidates()}
 
     print(f"\n=== generation {generation}: {n_candidates} candidates ===")
-    if parents:
-        print("  parents: " + ", ".join(
-            f"{p.candidate_id} ({p.primary:+.4f})" for p in parents))
+    if exploit:
+        print("  exploit: " + ", ".join(
+            f"{p.candidate_id} ({p.primary:+.4f})" for p in exploit))
+    if explore:
+        print("  explore: " + ", ".join(
+            f"{p.candidate_id} ({p.primary:+.4f}, unproven)" for p in explore))
 
     made: list[str] = []
+    stopped = ""
     for i in range(n_candidates):
         parent = by_id.get(parents[i % len(parents)].candidate_id) if parents else None
         prompt = experiment.variation_prompt(parent, prior)
@@ -141,6 +193,14 @@ def run_generation(
               flush=True)
         if a.accepted:
             made.extend(tags)
+        elif is_quota_exhausted(a.reason):
+            # Stop the batch. The window is the account's, not this
+            # candidate's, so every remaining slot would fail identically --
+            # generations 3 and 4 spent fourteen invocations learning that.
+            stopped = (f"aborted after {i + 1}/{n_candidates}: "
+                       f"backend out of budget ({a.reason[:60]})")
+            print(f"  {stopped}", flush=True)
+            break
 
     rec = GenerationRecord(
         generation=generation,
@@ -149,7 +209,8 @@ def run_generation(
         candidate_ids=made,
         parents=[p.candidate_id for p in parents],
         scores=[asdict(s) for s in prior],
-        notes=f"{len(made)}/{n_candidates} accepted",
+        notes=(f"{len(made)}/{n_candidates} accepted"
+               + (f"; {stopped}" if stopped else "")),
     )
     memory.record_generation(rec)
     memory.record_scores(generation, prior, "selection")

@@ -280,3 +280,124 @@ def test_controls_stay_excluded_even_when_nothing_scores_positive():
               _score("real_candidate", -0.02, (-0.03, -0.01))]
     policy = SelectionPolicy(exclude=["control_middle_only"])
     assert [p.candidate_id for p in policy.choose_parents(scored, 2)] == ["real_candidate"]
+
+
+def test_explore_slot_picks_the_best_unjudged_candidate():
+    """The exploit sort ranks every proven candidate above every unproven one.
+    With verdicts arriving in weeks and generations running in days, a
+    candidate written in generation N is still unproven at N+1, N+2, N+3 and
+    can never be bred from -- measured 2026-09-20, every candidate since
+    09-05 is a variant and no lineage has ever reached depth 4."""
+    scored = [_score("proven", 0.001, (0.0005, 0.002)),
+              _score("young_good", 0.004, (0.003, 0.005)),
+              _score("young_weak", 0.002, (0.001, 0.003))]
+    pol = SelectionPolicy(gate=_gate_from({"proven": GATE_PASS}))
+
+    # Exploit cannot reach the young ones however well they score.
+    assert [s.candidate_id for s in pol.choose_parents(scored, k=1)] == ["proven"]
+    # Explore reaches exactly those, best fitness first.
+    assert [s.candidate_id for s in pol.choose_explore(scored, k=1)] == ["young_good"]
+
+
+def test_explore_never_breeds_from_a_proven_loser():
+    """Unproven means the gate has no opinion, not that it has a bad one."""
+    scored = [_score("loser", 0.009, (0.008, 0.010)),
+              _score("unproven", 0.001, (0.0005, 0.002))]
+    pol = SelectionPolicy(gate=_gate_from({"loser": GATE_FAIL}))
+    assert [s.candidate_id for s in pol.choose_explore(scored, k=5)] == ["unproven"]
+
+
+def test_explore_and_exploit_never_return_the_same_parent():
+    """Two slots pointed at one candidate is one slot."""
+    scored = [_score("only", 0.001, (0.0005, 0.002))]
+    pol = SelectionPolicy(gate=_gate_from({"only": GATE_PASS}))
+    assert [s.candidate_id for s in pol.choose_parents(scored, k=1)] == ["only"]
+    assert pol.choose_explore(scored, k=1) == []   # it is proven, not unknown
+
+
+# ---------------------------------------------- generate on evidence, not a clock
+
+def test_an_unchanged_pool_does_not_earn_a_generation(tmp_path):
+    """Generations 3 and 4 chose the identical parent pair, and five
+    consecutive generations produced three candidates between them. A
+    generation costs a full agentic session; it is only worth that when the
+    pool it selects from has actually moved."""
+    from avo.core.loop import pool_changed
+    from avo.core.memory import GenerationRecord, RunMemory
+    from dataclasses import asdict
+
+    scored = [_score("a", 0.001, (0.0005, 0.002)),
+              _score("b", 0.002, (0.001, 0.003))]
+    pol = SelectionPolicy(gate=_gate_from({"a": GATE_PASS}))
+    mem = RunMemory("r", root=tmp_path)
+
+    assert pool_changed(pol, scored, mem)[0], "first generation must run"
+    mem.record_generation(GenerationRecord(
+        generation=1, started_at="", backend="fake", candidate_ids=[],
+        parents=[], scores=[asdict(s) for s in scored], notes=""))
+
+    changed, why = pool_changed(pol, scored, mem)
+    assert not changed and "no verdict has moved" in why
+
+
+def test_a_new_candidate_earns_a_generation(tmp_path):
+    from avo.core.loop import pool_changed
+    from avo.core.memory import GenerationRecord, RunMemory
+    from dataclasses import asdict
+
+    before = [_score("a", 0.001, (0.0005, 0.002))]
+    pol = SelectionPolicy(gate=_gate_from({"a": GATE_PASS}))
+    mem = RunMemory("r", root=tmp_path)
+    mem.record_generation(GenerationRecord(
+        generation=1, started_at="", backend="fake", candidate_ids=[],
+        parents=[], scores=[asdict(s) for s in before], notes=""))
+
+    after = before + [_score("newborn", 0.003, (0.002, 0.004))]
+    assert pool_changed(pol, after, mem)[0]
+
+
+def test_a_verdict_crossing_earns_a_generation(tmp_path):
+    """The case the gate exists for: a candidate accumulating enough fills to
+    stop being unproven is exactly when breeding again is worth the quota."""
+    from avo.core.loop import pool_changed
+    from avo.core.memory import GenerationRecord, RunMemory
+    from dataclasses import asdict
+
+    # The gate turns on evidence, exactly as the fill-count gate does.
+    pol = SelectionPolicy(
+        gate=lambda s: ((GATE_PASS if s.n_observations >= 1000
+                         else GATE_UNPROVEN), ""))
+    young = [_score("a", 0.001, (0.0005, 0.002), n=600)]
+    mem = RunMemory("r", root=tmp_path)
+    mem.record_generation(GenerationRecord(
+        generation=1, started_at="", backend="fake", candidate_ids=[],
+        parents=[], scores=[asdict(s) for s in young], notes=""))
+
+    grown = [_score("a", 0.001, (0.0005, 0.002), n=5000)]
+    changed, why = pool_changed(pol, grown, mem)
+    assert changed and "verdict(s) changed" in why
+
+
+def test_explore_skips_candidates_that_are_flat_rather_than_young():
+    """The bug this catches shipped for ten minutes on 2026-09-20. GATE_UNPROVEN
+    means two opposite things -- 'too few fills to judge' and 'measured, and
+    indistinguishable from zero' -- and ranking the whole unproven pool by
+    fitness picked the second kind: spread_scaled_shoulder on 30,667 fills, and
+    favourite_longshot, whose edge is recorded as having failed to replicate.
+    The explore slot exists for open questions, not answered ones."""
+    flat = _score("measured_flat", 0.009, (0.008, 0.010), n=30_000)
+    flat.secondary["pnl_n_fills"] = 30_667.0
+    young = _score("too_young", 0.002, (0.001, 0.003), n=900)
+    young.secondary["pnl_n_fills"] = 60.0
+
+    pol = SelectionPolicy(
+        gate=_gate_from({}),                       # everything unproven
+        maturity=lambda s: s.secondary.get("pnl_n_fills", float("nan")),
+        maturity_floor=200)
+    assert [s.candidate_id for s in pol.choose_explore([flat, young], k=2)] \
+        == ["too_young"]
+
+    # Without a maturity function core cannot tell them apart, and must not
+    # pretend to: it falls back to treating every unproven candidate as open.
+    naive = SelectionPolicy(gate=_gate_from({}))
+    assert len(naive.choose_explore([flat, young], k=2)) == 2
