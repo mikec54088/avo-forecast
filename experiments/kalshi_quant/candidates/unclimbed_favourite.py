@@ -45,6 +45,53 @@ story -- the gated population is cheaper on average (mean mid 0.684 against
     0.65-0.80   +0.1222 (n=117)     +0.0504 (n=501)
     0.80-0.95   +0.0926 (n=114)     +0.0223 (n=874)
 
+MECHANISM AUDIT, 2026-09-20 (added after this candidate passed the P&L gate
+on both halves). Three tests, on 23,501 entries with a >2h path and a tradable
+spread. Read these before extending the idea -- one of them says the story
+above is WRONG.
+
+1. THE EDGE IS MONOTONE IN RUN-UP, which is the strongest thing in its favour.
+   A fitted threshold shows a cliff at the gate and noise either side; this
+   shows a gradient across six bands:
+
+       run-up 0.00-0.02   +0.0866  [+0.0430,+0.1301]
+              0.02-0.05   +0.0816  [+0.0319,+0.1312]
+              0.05-0.10   +0.0480  [-0.0059,+0.1020]
+              0.10-0.20   +0.0399  [+0.0014,+0.0783]
+              0.20-0.40   +0.0152  [-0.0125,+0.0429]
+              0.40-1.00   -0.0011  [-0.0201,+0.0179]
+
+   It also shows MAX_RUNUP = 0.10 is too loose: the edge lives below 0.05 and
+   the 0.05-0.10 band already spans zero. See unclimbed_tight.
+
+2. THE MIRROR FAILS, so the stated mechanism is wrong or incomplete. If "a
+   price that held is under-rated" were the real story it would not need the
+   favourite side, and below 0.50 the same gate INVERTS:
+
+       mid 0.05-0.20, run-up <0.05   -0.0371  [-0.0599,-0.0144]
+       mid 0.20-0.35, run-up <0.05   -0.0153  [-0.0503,+0.0197]
+
+   In the cheapest band the gate loses money significantly, and slightly worse
+   than the ungated control. Whatever this is, it requires the favourite side;
+   it is not a general property of quote paths. Do not reason from the story
+   above about where else to look -- the story has been falsified once.
+
+3. IT IS NOT PROXYING VOLUME, OPEN INTEREST OR SPREAD -- those split evenly
+   inside the gate. It DOES interact with horizon, which this candidate
+   ignores entirely:
+
+       hours to close <=48   +0.0307  [-0.0028,+0.0643]
+       hours to close  >48   +0.1032  [+0.0704,+0.1361]
+
+   Three times the edge beyond two days, and below it the interval does not
+   clear zero. See unclimbed_far.
+
+All three were measured on the data that SELECTED this candidate, so none of
+them may be applied to it -- that is the overfitting the confirmation split
+exists to catch. They are hypotheses for variants with their own forward
+clocks, and this candidate is deliberately left unchanged so it keeps
+accumulating an uncontaminated record.
+
 WHY THE MINIMUM AND NOT THE LATEST MOVE. This is the sharp claim, and it is a
 direct correction to unmarked_favourite, which asks the same question over a
 fixed 60-minute window. Splitting the deep-path favourite population by both

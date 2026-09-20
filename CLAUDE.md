@@ -135,6 +135,42 @@ Read this before proposing anything; most obvious ideas are already dead.
   `paper_log.pnl_summary`, never a bare mean, and size per EVENT -- at 100
   contracts a signal the old sizing put 1,600 on a single index close.
 
+### The goal is a PORTFOLIO, not a winner
+
+Real trading runs several candidates at once. That has three consequences the
+early framing of this project got wrong:
+
+- **A profitable candidate SPINS OFF VARIANTS and stays intact.** A variant
+  gets a fresh `created_at`, so INVARIANT #1 gives it a clean forward clock
+  while the parent keeps accumulating an uncontaminated record. This is how a
+  measurement made on selection data can be tested without contaminating the
+  thing it was measured on -- `unclimbed_tight` and `unclimbed_far` (both
+  2026-09-20) exist for exactly that reason.
+- **Stopping generation to protect one finding is a mistake**, and the
+  2026-09-17 decision to do so was reversed on 2026-09-20. A candidate cannot
+  be judged for ~2 weeks, so idle time is judgement you never get. Generate
+  continuously at `-n 2`.
+- **Correlated candidates are one bet.** `unclimbed_tight` is a strict subset
+  of its parent; running both live is not diversification. Before trading
+  several candidates, measure the OVERLAP of the markets they act on, and size
+  the correlated group as one position -- the same lesson the ladder finding
+  taught at the market level.
+
+### Mechanism audit of unclimbed_favourite, 2026-09-20
+
+Done after it passed the P&L gate on both halves. Full detail in its docstring.
+
+- **The edge is monotone in run-up** across six bands (+0.0866 at 0.00-0.02
+  decaying to -0.0011 at 0.40-1.00). A fitted threshold shows a cliff; this
+  shows a gradient. Strongest evidence yet that it is a mechanism.
+- **The mirror FAILS: the stated mechanism is wrong.** "A price that held is
+  under-rated" should not need the favourite side, and below 0.50 the same gate
+  inverts -- mid 0.05-0.20 with run-up <0.05 returns -0.0371 [-0.0599,-0.0144].
+  Do not reason from that story about where else to look.
+- **Not a proxy** for volume, open interest or spread, which split evenly
+  inside the gate. It DOES interact with horizon: +0.1032 beyond 48h to close
+  against +0.0307 inside it.
+
 ### Standing decisions, 2026-09-17
 
 - **DO NOT TRADE REAL MONEY YET.** `unclimbed_favourite` is the first candidate
@@ -146,10 +182,12 @@ Read this before proposing anything; most obvious ideas are already dead.
   positives are expected, and +7.5c is far outside the 1-3 point range every
   other measured bias sits in. Waiting costs ~$326/day of paper profit; being
   wrong costs real money. Wait for the confirmation fills to roughly double.
-- **STOP GENERATING CANDIDATES for now.** 42 tested, 1 survivor. Each further
-  candidate adds multiple-comparison risk that DILUTES the one real finding.
-  Deepening the evidence on the survivor beats widening the search. Resume when
-  the survivor is settled either way.
+- ~~**STOP GENERATING CANDIDATES for now.**~~ **REVERSED 2026-09-20.** The
+  multiple-comparison worry was real but it ignored pipeline latency: a new
+  candidate cannot be judged for ~2 weeks, so three idle days bought nothing
+  and cost three days of forward evidence. The both-halves P&L gate is a strong
+  enough screen (1 of 42 passes) to carry the multiplicity explicitly instead
+  of abstaining. Generate continuously at `-n 2`.
 - **Paper trading is live** (`paper_runner.py`, launchd at :02/:17/:32/:47) and
   is the only thing that closes the gap replay cannot: were you there at the
   entry instant, was the quote tradable, was the size available. REPLAY scored
