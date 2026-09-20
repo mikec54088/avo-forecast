@@ -135,6 +135,22 @@ Read this before proposing anything; most obvious ideas are already dead.
   `paper_log.pnl_summary`, never a bare mean, and size per EVENT -- at 100
   contracts a signal the old sizing put 1,600 on a single index close.
 
+- **Once several candidates pass the money gate, skill is the wrong
+  tiebreak.** Generation 6 had four passers and `choose_parents()` broke the
+  tie on fitness, breeding from `tick_grid_conditioned` (+0.0064/contract) over
+  `unclimbed_favourite` (+0.0585) -- 9x apart in the quantity being hunted.
+  Since 2026-09-20 the sort is (gate verdict, P&L lower bound, skill, n), the
+  strength strictly BELOW the verdict so it can never lift an unproven or
+  losing candidate over a proven one. INVARIANT #2 is intact: skill is still
+  the fitness, and still orders candidates sharing a verdict and a strength.
+- **Use the LOWER BOUND, and read the cluster count next to it.** Sorting on
+  the point estimate would hand the run to whichever thin sample got lucky.
+  `pnl_stats` records `pnl_n_series` for this: on gen006 `ladder_leader` won on
+  231 fills, which reads as thin until you see the 86 series behind it and its
+  largest contributing 7% of net P&L -- the least concentrated of the eight
+  passers, against 34% for `tick_grid_conditioned`, the candidate the old sort
+  picked.
+
 ### The goal is a PORTFOLIO, not a winner
 
 Real trading runs several candidates at once. That has three consequences the
@@ -199,9 +215,10 @@ Done after it passed the P&L gate on both halves. Full detail in its docstring.
 
 - ~~**G2** — enforce the P&L gate in selection.~~ **DECIDED 2026-09-08** (commit
   `aa1f0ef`). `SelectionPolicy.eligible()` now drops candidates the gate has
-  PROVEN lose money, and `choose_parents()` sorts on (gate verdict, skill, n).
-  Only proven losers are excluded, not everything short of proven profitable:
-  require proof to reject, not proof to survive.
+  PROVEN lose money. Only proven losers are excluded, not everything short of
+  proven profitable: require proof to reject, not proof to survive. The sort
+  was amended 2026-09-20 to (gate verdict, P&L lower bound, skill, n) -- see
+  the tiebreak note above.
 - **G5** — `kalshi_research`, still `status = "planned"`. Note research
   candidates CANNOT be backtested: replaying a historical market while searching
   today's web returns the answer. They can only be evaluated forward, which is
