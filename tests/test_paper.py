@@ -122,3 +122,90 @@ def test_paper_candidates_is_a_deliberate_whitelist():
     multiple-comparison problem the confirmation split exists to control."""
     from experiments.kalshi_quant.paper_runner import PAPER_CANDIDATES
     assert PAPER_CANDIDATES == ("unclimbed_favourite",)
+
+
+def _ladder(n=6, event="KXNDX-26SEP18H1600", bid=0.70, at=None):
+    """One event, n rungs -- the nested-ladder shape that broke the sizing."""
+    at = at or NOW - timedelta(minutes=3)
+    return pd.DataFrame([{
+        "ticker": f"{event}-T{i}", "event_ticker": event, "series_ticker": "KXNDX",
+        "title": f"above {29400 + i*10}", "observed_at": at,
+        "close_time": NOW + timedelta(hours=2),
+        "yes_bid": bid, "yes_ask": bid + 0.02, "last_price": bid,
+        "volume": 100.0, "open_interest": 50.0,
+        "yes_bid_size": 4000.0, "yes_ask_size": 4000.0, "liquidity": 0.0,
+        "status": "open", "price_level_structure": "linear_cent", "is_mve": False,
+    } for i in range(n)])
+
+
+def test_exposure_is_capped_per_event_not_per_market(tmp_path):
+    """Sixteen rungs of one Nasdaq ladder settle on ONE index close. Sizing per
+    market made that 1,600 contracts on a single outcome while looking like
+    sixteen diversified positions."""
+    exp = _Exp({"buyer": _Buyer()})
+    _, st = run_pass(_ladder(6), _frame(0), now=NOW, root=tmp_path,
+                     candidates=("buyer",), experiment=exp,
+                     desired_contracts=100, max_contracts_per_event=100)
+    df = paper_log.read(tmp_path)
+    assert st["acted"] == 6, "every rung is still a recorded decision"
+    assert df["contracts"].sum() == 100, "one event, one position's worth of risk"
+    assert st["capped"] == 5
+    assert df[df.contracts == 0]["fill_reason"].str.contains("event exposure").all()
+
+
+def test_the_cap_holds_across_passes_as_rungs_enter_the_window(tmp_path):
+    """A ladder does not arrive all at once; later rungs must not top it up."""
+    exp = _Exp({"buyer": _Buyer()})
+    run_pass(_ladder(2), _frame(0), now=NOW, root=tmp_path,
+             candidates=("buyer",), experiment=exp, max_contracts_per_event=100)
+    run_pass(_ladder(6), _frame(0), now=NOW + timedelta(minutes=15), root=tmp_path,
+             candidates=("buyer",), experiment=exp, max_contracts_per_event=100)
+    assert paper_log.read(tmp_path)["contracts"].sum() == 100
+
+
+def test_separate_events_are_sized_independently(tmp_path):
+    exp = _Exp({"buyer": _Buyer()})
+    two = pd.concat([_ladder(3, "EV-A"), _ladder(3, "EV-B")], ignore_index=True)
+    run_pass(two, _frame(0), now=NOW, root=tmp_path, candidates=("buyer",),
+             experiment=exp, max_contracts_per_event=100)
+    df = paper_log.read(tmp_path)
+    assert df["contracts"].sum() == 200
+    assert df.groupby("event_ticker")["contracts"].sum().tolist() == [100, 100]
+
+
+def test_pnl_summary_clusters_rather_than_reporting_a_bare_mean():
+    """The error I made reading paper results: 296 trades were not 296 bets.
+    Unclustered +0.0860 [+0.0488,+0.1233]; by series [-0.0020,+0.1741]."""
+    import pandas as pd
+
+    rows = []
+    for ev in range(4):                      # 4 events, 10 correlated rungs each
+        won = ev < 3
+        for _ in range(10):
+            rows.append({"series_ticker": "S", "event_ticker": f"E{ev}",
+                         "acted": True, "contracts": 100,
+                         "pnl_per_contract": 0.28 if won else -0.72,
+                         "pnl_dollars": 28.0 if won else -72.0})
+    df = pd.DataFrame(rows)
+    wide = paper_log.pnl_summary(df, "event_ticker")
+    assert wide["n_trades"] == 40 and wide["n_clusters"] == 4
+    naive_se = df.pnl_per_contract.std() / len(df) ** 0.5
+    clustered_half = (wide["ci_hi"] - wide["ci_lo"]) / 2
+    assert clustered_half > 1.96 * naive_se, "clustering must widen a ladder"
+
+
+def test_two_appends_in_the_same_second_do_not_overwrite(tmp_path):
+    """append() named files HHMMSS.parquet, so two passes inside one second
+    silently destroyed the earlier one. Found 2026-09-20 when a cross-pass
+    exposure test reported zero contracts after logging a hundred."""
+    a = paper_log.append([paper_log.row("c", _mk(), 0.8, NOW)], tmp_path)
+    b = paper_log.append([paper_log.row("c", _mk("T2"), 0.8, NOW)], tmp_path)
+    assert a != b, "same-second writes must not collide"
+    assert len(paper_log.read(tmp_path)) == 2
+
+
+def _mk(ticker="T1"):
+    from experiments.kalshi_quant.types import MarketSnapshot
+    return MarketSnapshot(ticker, "E", "S", "t", NOW - timedelta(minutes=2),
+                          NOW + timedelta(hours=1), 0.70, 0.72, None, 100.0, 50.0,
+                          yes_bid_size=4000.0, yes_ask_size=4000.0)

@@ -32,6 +32,19 @@ SNAPSHOT_ROOT = Path(__file__).resolve().parents[2] / "data" / "kalshi_quant" / 
 LOCK_STALE_SECONDS = 20 * 60
 MAX_QUOTE_AGE_MIN = 20.0
 
+# Exposure is capped per EVENT, not per market, because a nested ladder is one
+# bet wearing many hats. Measured 2026-09-20: of 296 paper trades, 80 were rungs
+# of five Nasdaq-100 events -- "above 29409.99", "above 29399.99", "above
+# 29389.99" ... sixteen strikes ten points apart on one index at one instant.
+# The index closing above the top strike settles every rung, so at 100 contracts
+# a signal that is 1,600 contracts riding on a single close, not sixteen
+# diversified positions. The edge may be real and the sizing would still be
+# wrong.
+#
+# Equal to the per-market size by default: one event, one position's worth of
+# risk, however many rungs it offers.
+MAX_CONTRACTS_PER_EVENT = 100
+
 # Only these trade on paper. Adding one is a decision that a strategy has
 # earned a live test, and it should be recorded in the commit that adds it.
 # unclimbed_favourite (2026-09-17): the first candidate to pass the P&L gate on
@@ -94,6 +107,7 @@ def run_pass(
     candidates: tuple[str, ...] = PAPER_CANDIDATES,
     desired_contracts: int = 100,
     experiment: object = None,
+    max_contracts_per_event: int = MAX_CONTRACTS_PER_EVENT,
 ) -> tuple[Path | None, dict[str, int]]:
     from experiments.kalshi_quant.types import ForecastContext
 
@@ -113,8 +127,16 @@ def run_pass(
 
     already = paper_log.decided(root)
     stats = {"markets": len(snapshot), "asked": 0, "acted": 0,
-             "skipped_seen": 0, "errors": 0, "contracts": 0}
+             "skipped_seen": 0, "errors": 0, "contracts": 0, "capped": 0}
     rows: list[dict[str, object]] = []
+    # Contracts already committed per event, including earlier passes: a ladder
+    # can appear across several passes as successive rungs enter the window.
+    committed: dict[tuple[str, str], int] = {}
+    prior = paper_log.read(root)
+    if not prior.empty and "event_ticker" in prior.columns:
+        for cid, ev, ct in zip(prior["candidate_id"], prior["event_ticker"],
+                               prior["contracts"], strict=True):
+            committed[(cid, ev)] = committed.get((cid, ev), 0) + int(ct)
 
     for r in snapshot.itertuples(index=False):
         m: MarketSnapshot = _row_to_snapshot(r)
@@ -137,11 +159,21 @@ def run_pass(
                 err, p = f"raised {exc!r}"[:200], m.implied_prob
             stats["asked"] += 1
             stats["errors"] += bool(err)
-            row = paper_log.row(c.candidate_id, m, p, now, desired_contracts, err)
+            key = (c.candidate_id, m.event_ticker)
+            room = max(0, max_contracts_per_event - committed.get(key, 0))
+            want = min(desired_contracts, room)
+            row = paper_log.row(c.candidate_id, m, p, now, want, err)
             if row["acted"]:
                 stats["acted"] += 1
-                stats["contracts"] += int(row["contracts"])
-                rows.append(row)          # only positions are worth a row
+                got = int(row["contracts"])
+                if room < desired_contracts:
+                    stats["capped"] += 1
+                    row["fill_reason"] = (row["fill_reason"] or
+                                          f"event exposure cap ({room} of "
+                                          f"{desired_contracts} left)")
+                committed[key] = committed.get(key, 0) + got
+                stats["contracts"] += got
+                rows.append(row)          # the decision is recorded even at size 0
 
     return paper_log.append(rows, root), stats
 
@@ -150,6 +182,11 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["run"])
     ap.add_argument("--contracts", type=int, default=100)
+    ap.add_argument("--max-contracts-per-event", type=int,
+                    default=MAX_CONTRACTS_PER_EVENT,
+                    help="total contracts per EVENT per candidate (default "
+                         "%(default)s). A nested ladder is one bet with many "
+                         "rungs; sizing per market turns it into 16x the risk.")
     ap.add_argument("--max-quote-age-min", type=float, default=MAX_QUOTE_AGE_MIN)
     args = ap.parse_args()
 
@@ -170,10 +207,12 @@ def main() -> None:
         hist_df = pd.concat(
             [pd.read_parquet(f) for f in sorted(glob.glob(str(day / "*-near.parquet")))],
             ignore_index=True)
-        path, st = run_pass(df, hist_df, now=started, desired_contracts=args.contracts)
+        path, st = run_pass(df, hist_df, now=started, desired_contracts=args.contracts,
+                            max_contracts_per_event=args.max_contracts_per_event)
         el = (datetime.now(timezone.utc) - started).total_seconds()
         print(f"[paper] {st['markets']} markets from {snap.name} ({age_min:.0f} min old); "
-              f"asked {st['asked']}, ACTED {st['acted']} ({st['contracts']} contracts), "
+              f"asked {st['asked']}, ACTED {st['acted']} ({st['contracts']} contracts, "
+              f"{st['capped']} capped by event exposure), "
               f"{st['skipped_seen']} decided earlier, {st['errors']} errors "
               f"in {el:.0f}s -> {path}")
 

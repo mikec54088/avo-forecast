@@ -91,7 +91,10 @@ def append(rows: list[dict[str, object]], root: Path | None = None) -> Path | No
     now = datetime.now(timezone.utc)
     out = root / "paper" / f"date={now:%Y-%m-%d}"
     out.mkdir(parents=True, exist_ok=True)
-    path = out / f"{now:%H%M%S}.parquet"
+    # Microseconds, not seconds: two appends inside the same second
+    # silently OVERWROTE each other. Caught 2026-09-20 by a test that
+    # ran two passes back to back and lost the first.
+    path = out / f"{now:%H%M%S%f}.parquet"
     pd.DataFrame(rows, columns=COLS).to_parquet(path, index=False)
     return path
 
@@ -148,3 +151,45 @@ def pnl(df: pd.DataFrame) -> pd.DataFrame:
     t["pnl_per_contract"] = won * (1.0 - price) + (~won) * (-price)
     t["pnl_dollars"] = t["pnl_per_contract"] * t["contracts"]
     return t
+
+
+def pnl_summary(df: pd.DataFrame, cluster: str = "series_ticker") -> dict[str, float]:
+    """Mean P&L per contract with a CLUSTERED interval.
+
+    A bare mean over paper rows is wrong here and the error is not small.
+    Measured 2026-09-20 over 296 settled trades:
+
+        unclustered   +0.0860 [+0.0488, +0.1233]
+        by series     +0.0860 [-0.0020, +0.1741]   <- spans zero
+        by event      +0.0860 [+0.0110, +0.1610]
+
+    The cause is LADDERS. 80 of those trades were rungs of five Nasdaq-100
+    events -- "above 29409.99", "above 29399.99", "above 29389.99" ... sixteen
+    strikes ten points apart on one index at one instant. One close settles all
+    sixteen, so they are one observation wearing sixteen hats, and an i.i.d.
+    interval treats them as sixteen. That is the same 2.3x under-statement the
+    replay bootstrap was fixed for in August; this module reproduced it by
+    reporting a raw mean.
+
+    Series is the default because it is the project's convention and the more
+    conservative of the two -- events nest inside series, so series clustering
+    absorbs ladder correlation AND any shared drift across an underlying.
+    """
+    t = df[df["acted"] & (df["contracts"] > 0)] if "acted" in df else df
+    if t.empty or "pnl_per_contract" not in t:
+        return {"pnl_per_contract": float("nan"), "n_trades": 0.0, "n_clusters": 0.0,
+                "ci_lo": float("nan"), "ci_hi": float("nan")}
+    groups: dict[str, list[float]] = {}
+    for key, val in zip(t[cluster], t["pnl_per_contract"], strict=True):
+        groups.setdefault(key, []).append(float(val))
+    pnl = [x for v in groups.values() for x in v]
+    n, k = len(pnl), len(groups)
+    mean = sum(pnl) / n
+    if k < 2:
+        return {"pnl_per_contract": mean, "n_trades": float(n), "n_clusters": float(k),
+                "ci_lo": float("nan"), "ci_hi": float("nan")}
+    ss = sum((sum(v) - len(v) * mean) ** 2 for v in groups.values())
+    se = (ss * k / (k - 1)) ** 0.5 / n
+    return {"pnl_per_contract": mean, "n_trades": float(n), "n_clusters": float(k),
+            "ci_lo": mean - 1.96 * se, "ci_hi": mean + 1.96 * se,
+            "pnl_dollars": float(t["pnl_dollars"].sum())}

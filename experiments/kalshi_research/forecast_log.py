@@ -72,7 +72,10 @@ def append(rows: list[dict[str, object]], root: Path | None = None) -> Path:
     now = datetime.now(timezone.utc)
     out = root / "forecasts" / f"date={now:%Y-%m-%d}"
     out.mkdir(parents=True, exist_ok=True)
-    path = out / f"{now:%H%M%S}.parquet"
+    # Microseconds, not seconds: two appends inside the same second
+    # silently OVERWROTE each other. Caught 2026-09-20 by a test that
+    # ran two passes back to back and lost the first.
+    path = out / f"{now:%H%M%S%f}.parquet"
     pd.DataFrame(rows, columns=COLS).to_parquet(path, index=False)
     return path
 
