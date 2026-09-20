@@ -185,3 +185,18 @@ def test_the_fill_rule_has_exactly_one_implementation():
     assert "accumulate_fills" in inspect.getsource(ex.paper_trade)
     assert "accumulate_fills" in inspect.getsource(ex.KalshiQuantExperiment.score)
     assert inspect.getsource(ex.accumulate_fills).count("simulate_fill") == 1
+
+
+def test_the_cli_handles_a_chunk_factory_without_calling_len(data_root, monkeypatch, capsys):
+    """scoring_inputs() returns a factory when the table is warm, and `len()`
+    on a callable raises. Both `avo rank` and `avo evolve` printed an
+    observation count; the live rank died on exactly this."""
+    import inspect
+
+    from avo import cli
+
+    src = inspect.getsource(cli)
+    guarded = "sum(len(c) for c in entries()) if callable(entries) else len(entries)"
+    assert src.count(guarded) == 2, "rank and evolve must both guard the count"
+    # every len(entries) must sit inside that guard, never bare
+    assert src.count("len(entries)") == src.count(guarded), "a bare len() on a factory raises"

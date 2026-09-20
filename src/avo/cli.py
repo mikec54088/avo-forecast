@@ -149,7 +149,8 @@ def _rank(args) -> None:
     entries, history = _scoring_inputs(exp)
     _, verdicts = rank_and_confirm(exp, entries, history, SelectionPolicy(),
                                    gate=passes_pnl_gate)
-    print(f"{len(entries):,} observations; "
+    n_obs = (sum(len(c) for c in entries()) if callable(entries) else len(entries))
+    print(f"{n_obs:,} observations; "
           f"{CONFIRMATION_FRACTION:.0%} of series held back for confirmation\n")
     print(f"{'candidate':<26}{'selection':>11}{'confirm':>10}  {'P&L sel':>9}"
           f"{'P&L conf':>9}  verdict")
@@ -218,7 +219,8 @@ def _evolve(args) -> None:
     entries, history = _scoring_inputs(exp)
     watch = [Path.home() / ".claude" / "projects"]
 
-    print(f"run {run_id}\nbackend {backend.name}\n{len(entries):,} observations")
+    n_obs = (sum(len(c) for c in entries()) if callable(entries) else len(entries))
+    print(f"run {run_id}\nbackend {backend.name}\n{n_obs:,} observations")
 
     start = memory.latest_generation() + 1
     for g in range(start, start + args.generations):
