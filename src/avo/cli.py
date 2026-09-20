@@ -209,7 +209,7 @@ def _evolve(args) -> None:
     controls = [c.candidate_id for c in exp.seed_candidates()
                 if c.meta.get("role") == "control"]
     # G2, decided 2026-09-08: a candidate proven to lose money is not a parent.
-    from experiments.kalshi_quant.experiment import pnl_verdict
+    from experiments.kalshi_quant.experiment import pnl_strength, pnl_verdict
     cdir = repo_root / "experiments" / args.experiment / "candidates"
     factory = BACKENDS[args.backend]
     backend = factory(args.model) if args.backend == "claude" else factory()
@@ -234,7 +234,8 @@ def _evolve(args) -> None:
                 "--force knowingly."
             )
         rec = run_generation(exp, backend, memory, cdir, repo_root, g, args.n,
-                             SelectionPolicy(exclude=controls, gate=pnl_verdict),
+                             SelectionPolicy(exclude=controls, gate=pnl_verdict,
+                                             strength=pnl_strength),
                              entries, history,
                              timeout_s=args.timeout, watch_paths=watch)
         print(f"  generation {g}: {rec.notes}")

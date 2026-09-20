@@ -250,6 +250,18 @@ def test_pnl_se_is_not_inflated_by_singleton_series():
     assert se_new < se_old / 2
 
 
+def test_pnl_stats_records_the_cluster_count():
+    """A Liang-Zeger error is only trustworthy with enough clusters, and since
+    selection sorts parents on the lower bound built from it, the count has to
+    be readable next to the SE rather than inferred. ladder_leader passed the
+    gate on 231 fills, which looks thin until you see the 86 series."""
+    from experiments.kalshi_quant.experiment import pnl_stats
+    st = pnl_stats({"A": [0.1, 0.2], "B": [0.3], "C": [-0.1]}, n_considered=100)
+    assert st["pnl_n_series"] == 3.0
+    assert st["pnl_n_fills"] == 4.0
+    assert pnl_stats({}, n_considered=100)["pnl_n_series"] == 0.0
+
+
 def test_fee_follows_kalshis_published_taker_schedule():
     """Replaces a flat 1c placeholder that carried a TODO since 2026-08-23. The
     flat rate was wrong in the direction that flatters results: the real charge

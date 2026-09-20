@@ -83,6 +83,22 @@ def pnl_verdict(score: Score) -> tuple[int, str]:
     return GATE_UNPROVEN, f"not distinguishable from zero: {mean:+.4f}/contract, CI spans 0"
 
 
+def pnl_strength(score: Score) -> float:
+    """How strongly a candidate passes the P&L gate: the LOWER BOUND of its
+    series-clustered interval.
+
+    The lower bound rather than the mean, because it is the same quantity the
+    gate itself tests -- a candidate earning +0.05 on a wide interval has not
+    shown more than one earning +0.04 on a tight one. Used only to order
+    candidates that share a gate verdict.
+    """
+    mean = score.secondary.get("pnl_per_contract", float("nan"))
+    se = score.secondary.get("pnl_se_clustered", float("nan"))
+    if mean != mean or se != se:
+        return float("nan")
+    return mean - 1.96 * se
+
+
 def passes_pnl_gate(score: Score) -> tuple[bool, str]:
     """Would this candidate have made money, allowing for noise?
 
@@ -166,7 +182,8 @@ def pnl_stats(by_series: dict[str, list[float]], n_considered: int) -> dict[str,
     pnl = [r for v in by_series.values() for r in v]
     if not pnl:
         return {"pnl_per_contract": float("nan"), "pnl_n_fills": 0.0,
-                "pnl_fill_rate": 0.0, "pnl_se_clustered": float("nan")}
+                "pnl_fill_rate": 0.0, "pnl_se_clustered": float("nan"),
+                "pnl_n_series": 0.0}
 
     mean = sum(pnl) / len(pnl)
     k = len(by_series)
@@ -202,6 +219,10 @@ def pnl_stats(by_series: dict[str, list[float]], n_considered: int) -> dict[str,
         "pnl_n_fills": float(len(pnl)),
         "pnl_fill_rate": len(pnl) / n_considered,
         "pnl_se_clustered": se,
+        # Cluster COUNT, not just the clustered SE. A Liang-Zeger error is only
+        # trustworthy with enough clusters; on a handful it is understated, and
+        # the lower bound built from it is the number selection now sorts on.
+        "pnl_n_series": float(k),
     }
 
 

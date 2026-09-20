@@ -62,6 +62,55 @@ def _gate_from(mapping):
     return lambda s: (mapping.get(s.candidate_id, GATE_UNPROVEN), "")
 
 
+def test_gate_passers_are_ordered_by_how_strongly_they_pass(monkeypatch):
+    """Generation 6 bred from the wrong parent. Four candidates passed the
+    money gate; the tiebreak was fitness, and fitness chose +0.0064/contract
+    over +0.0585 because it had marginally more skill. Among candidates that
+    have ALL proven they make money, skill selects against making more."""
+    weak = _score("weak_but_skilled", 0.0011, (0.0005, 0.002))
+    strong = _score("strong_but_dull", 0.0003, (0.0001, 0.0006))
+    pol = SelectionPolicy(
+        gate=lambda s: (GATE_PASS, ""),
+        strength=lambda s: {"weak_but_skilled": 0.0064,
+                            "strong_but_dull": 0.0585}[s.candidate_id])
+    assert [s.candidate_id for s in pol.choose_parents([weak, strong], 2)] == [
+        "strong_but_dull", "weak_but_skilled"]
+
+
+def test_fitness_still_decides_when_strength_ties():
+    """INVARIANT #2 is untouched: skill remains the fitness."""
+    a = _score("a", 0.001, (0.0, 0.002))
+    b = _score("b", 0.003, (0.0, 0.004))
+    pol = SelectionPolicy(gate=lambda s: (GATE_PASS, ""), strength=lambda s: 0.05)
+    assert [s.candidate_id for s in pol.choose_parents([a, b], 2)] == ["b", "a"]
+
+
+def test_strength_never_promotes_across_a_gate_verdict():
+    """A proven loser with a big number must not outrank a proven winner."""
+    loser = _score("loser", 0.02, (0.01, 0.03))
+    winner = _score("winner", 0.0001, (0.0, 0.0002))
+    pol = SelectionPolicy(
+        gate=_gate_from({"loser": GATE_FAIL, "winner": GATE_PASS}),
+        strength=lambda s: 9.0 if s.candidate_id == "loser" else 0.001)
+    assert [s.candidate_id for s in pol.choose_parents([loser, winner], 2)] == ["winner"]
+
+
+def test_an_unmeasurable_strength_sorts_last_not_first():
+    """NaN comparisons are false, so an unguarded NaN can land anywhere."""
+    nan_one = _score("nan_one", 0.01, (0.0, 0.02))
+    real = _score("real", 0.001, (0.0, 0.002))
+    pol = SelectionPolicy(
+        gate=lambda s: (GATE_PASS, ""),
+        strength=lambda s: float("nan") if s.candidate_id == "nan_one" else 0.01)
+    assert [s.candidate_id for s in pol.choose_parents([nan_one, real], 2)] == [
+        "real", "nan_one"]
+
+
+def test_selection_without_a_strength_is_unchanged():
+    a = _score("a", 0.001, (0.0, 0.002)); b = _score("b", 0.003, (0.0, 0.004))
+    assert [s.candidate_id for s in SelectionPolicy().choose_parents([a, b], 2)] == ["b", "a"]
+
+
 def test_a_candidate_proven_to_lose_money_is_never_a_parent():
     """G2, decided 2026-09-08. Selection sorted on skill alone would have bred
     generation 4 from logit_midpoint: top of the board, confirmed on held-out

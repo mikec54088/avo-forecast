@@ -156,6 +156,7 @@ class SelectionPolicy:
         min_observations: int = 500,
         exclude: Sequence[str] = (),
         gate: Callable[[Score], tuple[int, str]] | None = None,
+        strength: Callable[[Score], float] | None = None,
     ):
         self.require_positive = require_positive
         self.min_observations = min_observations
@@ -164,6 +165,27 @@ class SelectionPolicy:
         # The experiment's gate, as a GATE_* verdict. Optional: an experiment
         # without one selects on fitness alone, as this class always did.
         self.gate = gate
+        # How STRONGLY a candidate passes its gate, ordering candidates that
+        # share a verdict. Core does not know what it measures.
+        #
+        # Added 2026-09-20 after generation 6 bred from the wrong parent. Four
+        # candidates passed the money gate; the tiebreak was fitness, and
+        # fitness chose the one earning +0.0064 per contract over the one
+        # earning +0.0585 -- nine times less money, on marginally more Brier
+        # skill. G2 made the gate a FILTER but left the ordering on a metric
+        # this project has shown repeatedly says nothing about money. Among
+        # candidates that have ALL already proven they make money, ranking by
+        # skill selects against making more of it.
+        #
+        # INVARIANT #2 is untouched: skill remains the fitness, and still
+        # orders candidates sharing both a verdict and a strength.
+        self.strength = strength
+
+    def _strength(self, s: Score) -> float:
+        if self.strength is None:
+            return 0.0
+        v = self.strength(s)
+        return v if v == v else float("-inf")      # NaN sorts last
 
     def _gate(self, s: Score) -> int:
         if self.gate is None:
@@ -210,7 +232,11 @@ class SelectionPolicy:
         return out
 
     def choose_parents(self, scored: Sequence[Score], k: int) -> list[Score]:
-        """The best k by skill, breaking ties toward more observations.
+        """Best k by (gate verdict, gate strength, fitness, observations).
+
+        Fitness still decides between candidates sharing a verdict and a
+        strength; it no longer decides between candidates that have already
+        proven they make money, because there it picks the one making least.
 
         Falls back to the least-bad candidates when nothing scores positive. A
         generation where everything failed still has to breed from something,
@@ -232,5 +258,6 @@ class SelectionPolicy:
         # Gate verdict leads, fitness breaks ties within it. A candidate that
         # has demonstrated money is a better parent than one that merely scores
         # well, and INVARIANT #2 still decides the order among equals.
-        pool.sort(key=lambda s: (-self._gate(s), -s.primary, -s.n_observations))
+        pool.sort(key=lambda s: (-self._gate(s), -self._strength(s),
+                                 -s.primary, -s.n_observations))
         return pool[:k]
