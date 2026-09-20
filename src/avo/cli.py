@@ -3,6 +3,8 @@ through avo.core.registry, so adding an experiment needs no change here."""
 from __future__ import annotations
 
 import argparse
+import os
+import time
 from pathlib import Path
 
 from avo.core import registry
@@ -196,6 +198,38 @@ def _entries(args) -> None:
           + (f"  ({stats.note})" if stats.note else ""))
 
 
+class _EvolveLock:
+    """One generation at a time, whoever started it.
+
+    Scheduling evolve makes a collision reachable that never was before: a
+    nightly run firing while a manual one is mid-flight. Both would breed, both
+    would spend a session from the same rolling window, and both would write
+    the same gen###.json -- the second silently overwriting the first's record
+    of what it had already generated. Same stale-lock idiom as capture._Lock.
+    """
+
+    STALE_S = 6 * 3600          # a generation that has run 6h is not running
+
+    def __init__(self, root: Path) -> None:
+        self.path = root / ".evolve.lock"
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.path.exists():
+            age = time.time() - self.path.stat().st_mtime
+            if age < self.STALE_S:
+                raise SystemExit(
+                    f"another evolve holds {self.path} (age {age / 60:.0f} min); "
+                    "skipping. Generations are not safe to run concurrently -- "
+                    "they share a quota window and a run record.")
+            print(f"  clearing stale evolve lock ({age / 3600:.1f}h old)")
+        self.path.write_text(str(os.getpid()))
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.path.unlink(missing_ok=True)
+
+
 def _evolve(args) -> None:
     """Phase 5. Generate, score, select, checkpoint, repeat."""
     from avo.core.loop import pool_changed, ready_to_rank, run_generation, score_all
@@ -227,45 +261,47 @@ def _evolve(args) -> None:
     print(f"run {run_id}\nbackend {backend.name}\n{n_obs:,} observations")
 
     start = memory.latest_generation() + 1
-    for g in range(start, start + args.generations):
-        current = score_all(exp, entries, history, subset="selection")
-        if not ready_to_rank(current) and not args.force:
-            raise SystemExit(
-                "the newest candidates have too few observations to rank. "
-                "Candidates are scored only on markets resolving AFTER they "
-                "were written, so a fresh cohort has no score and ranking it "
-                "would breed from noise. Wait for markets to resolve, or pass "
-                "--force knowingly."
-            )
-        policy = SelectionPolicy(
-            exclude=controls, gate=pnl_verdict, strength=pnl_strength,
-            # The explore slot wants candidates too YOUNG to judge, not ones
-            # measured flat. Both are GATE_UNPROVEN; only the fill count
-            # separates them, and only the experiment knows what a fill is.
-            maturity=lambda s: s.secondary.get("pnl_n_fills", float("nan")),
-            maturity_floor=PNL_GATE_MIN_FILLS)
+    lock_root = repo_root / "runs"
+    with _EvolveLock(lock_root):
+        for g in range(start, start + args.generations):
+            current = score_all(exp, entries, history, subset="selection")
+            if not ready_to_rank(current) and not args.force:
+                raise SystemExit(
+                    "the newest candidates have too few observations to rank. "
+                    "Candidates are scored only on markets resolving AFTER they "
+                    "were written, so a fresh cohort has no score and ranking it "
+                    "would breed from noise. Wait for markets to resolve, or pass "
+                    "--force knowingly."
+                )
+            policy = SelectionPolicy(
+                exclude=controls, gate=pnl_verdict, strength=pnl_strength,
+                # The explore slot wants candidates too YOUNG to judge, not ones
+                # measured flat. Both are GATE_UNPROVEN; only the fill count
+                # separates them, and only the experiment knows what a fill is.
+                maturity=lambda s: s.secondary.get("pnl_n_fills", float("nan")),
+                maturity_floor=PNL_GATE_MIN_FILLS)
 
-        # Generate on evidence, not on the calendar. Verdicts arrive in weeks
-        # and generations ran in days, so the loop kept re-deriving the same
-        # parents -- generations 3 and 4 chose an identical pair -- and spent a
-        # full agentic session each time to do it.
-        changed, why = pool_changed(policy, current, memory)
-        if not changed and not args.force:
-            print(f"  generation {g} skipped: {why}.\n"
-                  "  Parents would be identical to the last generation, so this "
-                  "would spend a session\n  re-deriving them. Wait for markets "
-                  "to resolve, or pass --force knowingly.")
-            break
-        print(f"  pool: {why}")
+            # Generate on evidence, not on the calendar. Verdicts arrive in weeks
+            # and generations ran in days, so the loop kept re-deriving the same
+            # parents -- generations 3 and 4 chose an identical pair -- and spent a
+            # full agentic session each time to do it.
+            changed, why = pool_changed(policy, current, memory)
+            if not changed and not args.force:
+                print(f"  generation {g} skipped: {why}.\n"
+                      "  Parents would be identical to the last generation, so this "
+                      "would spend a session\n  re-deriving them. Wait for markets "
+                      "to resolve, or pass --force knowingly.")
+                break
+            print(f"  pool: {why}")
 
-        # `current` is passed through: run_generation used to score everything a
-        # SECOND time, a full pass over the entries table for no new information.
-        rec = run_generation(exp, backend, memory, cdir, repo_root, g, args.n,
-                             policy, entries, history,
-                             timeout_s=args.timeout, watch_paths=watch,
-                             prior=current)
-        print(f"  generation {g}: {rec.notes}")
-        print(f"  checkpointed -> runs/{run_id}/gen{g:03d}.json")
+            # `current` is passed through: run_generation used to score everything a
+            # SECOND time, a full pass over the entries table for no new information.
+            rec = run_generation(exp, backend, memory, cdir, repo_root, g, args.n,
+                                 policy, entries, history,
+                                 timeout_s=args.timeout, watch_paths=watch,
+                                 prior=current)
+            print(f"  generation {g}: {rec.notes}")
+            print(f"  checkpointed -> runs/{run_id}/gen{g:03d}.json")
 
 
 if __name__ == "__main__":

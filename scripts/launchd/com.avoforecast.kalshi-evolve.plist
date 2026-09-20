@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.avoforecast.kalshi-evolve</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/hermesagent/miniconda3/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>-m</string>
+        <string>avo.cli</string>
+        <string>evolve</string>
+        <string>kalshi_quant</string>
+        <string>--model</string>
+        <string>sonnet</string>
+        <string>-n</string>
+        <string>2</string>
+        <string>--generations</string>
+        <string>1</string>
+        <string>--run-id</string>
+        <string>kalshi_quant-20260905T044920Z</string>
+    </array>
+
+    <!-- --run-id is PINNED, and the job is wrong without it. `run_id =
+         args.run_id or new_run_id(...)`, so an unpinned scheduled run creates
+         a FRESH run directory every night; pool_changed() then finds no prior
+         generation, reports "first generation", and generates unconditionally.
+         The cadence gate would be silently defeated -- the exact failure class
+         this README warns about, where the job runs, exits 0, and does the
+         wrong work. If the run is ever restarted, this string must change with
+         it; `ls runs/` is the check.
+
+         --model is PINNED for the reasons in the research plist: the CLI
+         default is a user setting, exhausted Fable credits killed a whole
+         generation silently (2026-09-11), and INVARIANT #7 forbids mixing
+         backends within a run. Sonnet 5 because it GENERATES better per unit
+         cost and wall clock -- measured 2026-09-11, two accepted candidates in
+         ~17 min each against Opus's one in 27.
+
+         -n 2, not more. A generation run is a full agentic session, not a
+         request, and it competes with the human's own rolling window.
+         Generations 3 and 4 ran -n 8 and burned fourteen invocations against
+         an exhausted quota. -->
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/hermesagent/.local/bin:/Users/hermesagent/miniconda3/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/hermesagent/development/avo-forecast</string>
+
+    <!-- 03:35 daily. Scheduling this only became safe on 2026-09-20, when
+         pool_changed() started requiring a new candidate or a moved verdict:
+         before it, a nightly run would have spent a full agentic session
+         re-deriving identical parents, which is what generations 3 and 4 did
+         by hand.
+
+         03:35 because the hourly FULL sweep runs :07-:33 and the heavy half of
+         evolve is its scoring pass, which lands in the :35-:00 gap. Overnight
+         because a generation competes with the human's own quota window.
+
+         A SKIPPED run is not free but it is cheap in the currency that
+         matters: ~25 min of local CPU for the scoring pass (score_all must run
+         before the pool can be compared -- you cannot know a verdict moved
+         without recomputing it) and ZERO API quota. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>3</integer>
+        <key>Minute</key><integer>35</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/evolve.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/evolve.log</string>
+
+    <!-- FALSE, unlike the capture jobs. Those want to start the moment they
+         are loaded; this one would fire a generation on install, possibly on
+         top of a manual run in progress. _EvolveLock would catch that, but a
+         job whose first act is to collide is a bad job. -->
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

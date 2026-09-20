@@ -7,6 +7,7 @@ including the ones that are hard to provoke on purpose from a real agent.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from pathlib import Path
@@ -676,3 +677,31 @@ def test_an_ordinary_rejection_does_not_stop_the_batch(monkeypatch, tmp_path):
     rec = _run_generation_with(monkeypatch, tmp_path, fake, n=4)
     assert len(calls) == 4
     assert "out of budget" not in rec.notes
+
+
+def test_two_generations_cannot_run_at_once(tmp_path):
+    """Scheduling evolve makes a collision reachable that never was before: a
+    nightly run firing while a manual one is mid-flight. Both would breed from
+    the same rolling quota window and both would write the same gen###.json,
+    the second silently overwriting the first's record of what it generated."""
+    from avo.cli import _EvolveLock
+    with _EvolveLock(tmp_path):
+        with pytest.raises(SystemExit, match="another evolve holds"):
+            with _EvolveLock(tmp_path):
+                pass
+    # released on exit, so the next run proceeds
+    with _EvolveLock(tmp_path):
+        pass
+
+
+def test_a_stale_evolve_lock_does_not_wedge_the_loop_forever(tmp_path):
+    """A crashed generation must not stop every future one. Capture learned
+    this the same way."""
+    import os
+    from avo.cli import _EvolveLock
+    lock = tmp_path / ".evolve.lock"
+    lock.write_text("99999")
+    old = time.time() - (_EvolveLock.STALE_S + 60)
+    os.utime(lock, (old, old))
+    with _EvolveLock(tmp_path):
+        assert lock.exists()

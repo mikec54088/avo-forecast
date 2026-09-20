@@ -27,6 +27,7 @@ never does the work.
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.avoforecast.kalshi-snapshot.plist
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.avoforecast.kalshi-settle.plist
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.avoforecast.kalshi-research-run.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.avoforecast.kalshi-evolve.plist
 
 ## Verify
 
@@ -36,7 +37,37 @@ Never infer success from the plist being loaded — check that data lands.
     ls data/kalshi_quant/snapshots/date=*/   # a new file every 15 min
     ls data/kalshi_research/forecasts/date=*/  # research runner: a file per pass that forecast anything
     tail data/research.log
+    tail data/evolve.log
     tail -f data/capture.log
+
+## The evolve agent
+
+Daily at 03:35. Unlike the capture jobs this one is allowed to do nothing, and
+usually will: `pool_changed()` requires a new candidate or a moved verdict
+before it spends a generation, so a run that prints
+
+    generation N skipped: no candidate is new and no verdict has moved
+
+is the job working, not failing. It exits 0 either way. Scheduling only became
+safe once that gate existed -- before it, a nightly run would have spent a full
+agentic session re-deriving identical parents, which is what generations 3 and
+4 did by hand.
+
+Two things about this job are load-bearing and easy to get wrong:
+
+- **`--run-id` must stay pinned.** Unpinned, every night creates a fresh run
+  directory, `pool_changed()` finds no prior generation and reports "first
+  generation", and the gate never fires. The job would run, exit 0, and
+  generate unconditionally. If the run is restarted, edit the plist; `ls runs/`
+  is the check.
+- **It takes a lock** (`runs/.evolve.lock`, stale after 6h). A nightly run
+  firing while you have one going by hand would breed twice from one quota
+  window and overwrite the run record. The second one exits with a message
+  rather than colliding.
+
+A skipped run still costs ~25 min of local CPU, because the pool cannot be
+compared without recomputing the scores. It costs no API quota, which is the
+resource that actually runs out.
 
 ## Reload after editing
 
