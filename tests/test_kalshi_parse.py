@@ -180,3 +180,93 @@ def test_series_walk_respects_its_page_cap():
             return {"markets": [{"t": 1}], "cursor": "always-more"}
 
     assert len(list(_iter_series_pages(Endless(), ["A"], 3))) == 3
+
+
+# ------------------------------------------- transport retry (added 2026-09-19)
+
+def _client_with(monkeypatch, responses):
+    """A KalshiClient whose GET returns/raises from `responses` in order."""
+    import httpx
+
+    from experiments.kalshi_quant.client import KalshiClient
+
+    c = KalshiClient()
+    seq = list(responses)
+    calls = []
+
+    def fake_get(path, params=None):
+        calls.append(path)
+        item = seq.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return httpx.Response(item, json={"ok": True}, request=httpx.Request("GET", "http://x"))
+
+    monkeypatch.setattr(c._http, "get", fake_get)
+    monkeypatch.setattr("experiments.kalshi_quant.client.time.sleep", lambda _: None)
+    return c, calls
+
+
+def test_a_dropped_connection_is_retried_not_fatal(monkeypatch):
+    """The whole point. A series-scoped full pass makes ~4,100 requests, and
+    before this one flaky handshake discarded the entire 26-minute sweep and
+    its snapshot."""
+    import httpx
+
+    c, calls = _client_with(monkeypatch, [
+        httpx.ConnectTimeout("handshake timed out"),
+        httpx.ConnectError("nodename nor servname provided"),
+        200,
+    ])
+    assert c._get("/markets") == {"ok": True}
+    assert len(calls) == 3
+    assert c.transport_retries == 2
+    assert c.requests == 1, "only the delivered request counts as a request"
+
+
+def test_server_errors_are_retried_but_client_errors_are_not(monkeypatch):
+    """5xx is the server declining to answer; 4xx is the request being wrong,
+    and repeating a malformed request just wastes the budget."""
+    c, calls = _client_with(monkeypatch, [500, 502, 200])
+    assert c._get("/markets") == {"ok": True}
+    assert c.server_errors == 2 and len(calls) == 3
+
+    c2, calls2 = _client_with(monkeypatch, [404])
+    with pytest.raises(httpx.HTTPStatusError):
+        c2._get("/markets")
+    assert len(calls2) == 1, "a 404 must not be retried"
+
+
+def test_throttling_and_transport_faults_are_counted_separately(monkeypatch):
+    """They mean opposite things: a 429 says slow down, a dropped connection
+    says try again sooner. Conflating them hides which one is happening."""
+    import httpx
+
+    c, _ = _client_with(monkeypatch, [429, httpx.ReadTimeout("slow"), 429, 200])
+    assert c._get("/markets") == {"ok": True}
+    assert c.rate_limited == 2 and c.transport_retries == 1
+
+
+def test_exhausted_transport_says_so_rather_than_blaming_the_rate_limiter(monkeypatch):
+    """"Rate limited" and "the connection kept failing" call for different
+    fixes and must not be reported as the same thing."""
+    import httpx
+
+    from experiments.kalshi_quant.client import MAX_ATTEMPTS
+
+    c, calls = _client_with(monkeypatch, [httpx.ConnectTimeout("boom")] * MAX_ATTEMPTS)
+    with pytest.raises(RuntimeError, match="transport failed"):
+        c._get("/markets")
+    assert len(calls) == MAX_ATTEMPTS
+
+    c2, _ = _client_with(monkeypatch, [429] * MAX_ATTEMPTS)
+    with pytest.raises(RuntimeError, match="rate limited"):
+        c2._get("/markets")
+
+
+def test_a_sweeps_survival_odds_are_what_motivated_this():
+    """Documenting the arithmetic that made this a priority rather than a
+    nicety: without retry, one bad request in ten thousand loses a third of
+    all full sweeps."""
+    survives = lambda p, n=4100: (1 - p) ** n
+    assert survives(1e-4) < 0.70
+    assert survives(5e-4) < 0.15

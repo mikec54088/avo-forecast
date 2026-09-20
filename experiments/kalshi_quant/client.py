@@ -45,6 +45,35 @@ MAX_PAGE_LIMIT = 1000
 # downside is not a trade worth making.
 MIN_REQUEST_INTERVAL = 0.22  # seconds
 
+# Transport faults that are worth retrying. DNS, TLS handshake and read
+# timeouts are transient in a way a 4xx never is: the request did not reach a
+# decision, so repeating it is not repeating an action.
+#
+# Added 2026-09-19 after two days of transport failures. The client retried
+# ONLY on 429, so a single bad request killed whatever sweep it was in -- and a
+# series-scoped full pass makes ~4,100 requests. With no transport retry, a
+# per-request failure rate of 1 in 10,000 lets that sweep complete just 66% of
+# the time, and 1 in 2,000 drops it to 13%. Losing a 26-minute sweep and its
+# snapshot to one flaky handshake is a structural fragility, not bad luck, and
+# snapshots are the irrecoverable half of this project.
+#
+# 5xx is included for the same reason: it is the server declining to answer,
+# not declining the request. Kalshi returned a 500 on a settle query on
+# 2026-09-12. 4xx is NOT retried -- a malformed request stays malformed.
+TRANSPORT_ERRORS = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.PoolTimeout,
+    httpx.RemoteProtocolError,
+)
+MAX_ATTEMPTS = 7
+# Blips are measured in seconds, so start small and climb: 0.5, 1, 2, 4, 8, 16.
+# The 429 path keeps its own slower ramp -- being throttled means backing off
+# further, while a dropped connection means trying again sooner.
+TRANSPORT_BACKOFF_BASE = 0.5
+
 
 def _iso(s: str | None) -> datetime | None:
     if not s:
@@ -62,6 +91,11 @@ class KalshiClient:
         # headers exposed, this is the only early warning available.
         self.requests = 0
         self.rate_limited = 0
+        # Counted separately from 429s because they mean opposite things: a 429
+        # says slow down, a transport fault says the connection died. Both are
+        # invisible without this -- there are no rate-limit headers to read.
+        self.transport_retries = 0
+        self.server_errors = 0
 
     def close(self) -> None:
         self._http.close()
@@ -73,20 +107,45 @@ class KalshiClient:
         self.close()
 
     def _get(self, path: str, **params: Any) -> dict[str, Any]:
+        """One paced GET, retried through throttling and transport faults.
+
+        Retries 429, 5xx and dropped connections; never retries 4xx. Raises
+        only once the budget is spent, and says which failure exhausted it --
+        "rate limited" and "connection kept failing" call for different fixes
+        and must not be reported as the same thing.
+        """
         clean = {k: v for k, v in params.items() if v is not None}
-        for attempt in range(7):
+        last_transport: Exception | None = None
+        for attempt in range(MAX_ATTEMPTS):
             wait = MIN_REQUEST_INTERVAL - (time.monotonic() - self._last_request)
             if wait > 0:
                 time.sleep(wait)
             self._last_request = time.monotonic()
-            r = self._http.get(path, params=clean)
+            try:
+                r = self._http.get(path, params=clean)
+            except TRANSPORT_ERRORS as exc:
+                # The request never reached a verdict, so this is not a retry
+                # of an action -- it is the first delivery, attempted again.
+                self.transport_retries += 1
+                last_transport = exc
+                time.sleep(TRANSPORT_BACKOFF_BASE * 2**attempt)
+                continue
             self.requests += 1
             if r.status_code == 429:
                 self.rate_limited += 1
                 time.sleep(1.5 * 2**attempt)
                 continue
+            if r.status_code >= 500:
+                self.server_errors += 1
+                time.sleep(TRANSPORT_BACKOFF_BASE * 2**attempt)
+                continue
             r.raise_for_status()
             return r.json()
+        if last_transport is not None:
+            raise RuntimeError(
+                f"transport failed {MAX_ATTEMPTS}x: {path} "
+                f"({type(last_transport).__name__}: {last_transport})"
+            ) from last_transport
         raise RuntimeError(f"rate limited after retries: {path}")
 
     def iter_market_pages(

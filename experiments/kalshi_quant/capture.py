@@ -296,7 +296,8 @@ def snapshot(
         print(
             f"[{scope}] {len(rows)} quotable markets ({mve} mve) from {seen} seen "
             f"over {pages} pages in {elapsed:.0f}s; {no_book} skipped for no "
-            f"two-sided book; {unparsed} unparsed; {client.rate_limited} rate-limited "
+            f"two-sided book; {unparsed} unparsed; {client.rate_limited} rate-limited, "
+            f"{client.transport_retries} transport-retried, {client.server_errors} 5xx "
             f"of {client.requests} requests -> {path}"
         )
         if overran:
@@ -462,7 +463,8 @@ def settle(
         print(
             f"{len(rows)} resolutions over {pages} requests in {elapsed:.0f}s; "
             f"{unresolved} still pending (closed but not yet settled); "
-            f"{client.rate_limited} rate-limited -> {path}"
+            f"{client.rate_limited} rate-limited, {client.transport_retries} "
+            f"transport-retried, {client.server_errors} 5xx -> {path}"
         )
         if mismatches:
             print(f"  !!! {len(mismatches)} result/settlement_value disagreements:")

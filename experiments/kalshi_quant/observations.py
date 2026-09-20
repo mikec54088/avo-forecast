@@ -124,8 +124,77 @@ def _row_to_snapshot(r) -> MarketSnapshot:
     )
 
 
+# Columns whose values repeat across millions of rows. Read as categoricals,
+# the difference is not marginal: profiled 2026-09-19 over 50,979,616 snapshot
+# rows, `title` alone was 3.6 GB as object dtype and the five string columns
+# together were ~9 GB of a 15.1 GB frame.
+_CATEGORICAL = ("ticker", "event_ticker", "series_ticker", "title",
+                "price_level_structure", "status")
+
+
+def _read_snapshot(path: str, keep_tickers: set[str] | None = None,
+                   keep_events: set[str] | None = None) -> pd.DataFrame:
+    """One snapshot file, filtered BEFORE it joins anything else.
+
+    Filtering per file is the whole trick. The old loader concatenated every
+    snapshot ever written into one frame and then threw 72% of it away: 51.0M
+    rows in, 14.2M kept. Discarding per file means the discarded rows never
+    coexist, and peak memory stops tracking the size of the archive.
+    """
+    df = pd.read_parquet(path)
+    if keep_tickers is not None:
+        df = df[df["ticker"].isin(keep_tickers)]
+    elif keep_events is not None:
+        df = df[df["event_ticker"].isin(keep_events)]
+    if df.empty:
+        return df
+    for c in _CATEGORICAL:
+        if c in df.columns:
+            df[c] = df[c].astype("category")
+    # PRICES STAY float64. float32 renders 0.30 as 0.30000001192092896, and
+    # every candidate's cost gate is an inequality against a price -- this
+    # project already has a documented trap where `spread <= 0.04` fails on a
+    # nominal four-cent book (see SPREAD_TOL in the candidates). Saving a few
+    # hundred MB is not worth moving where a gate fires.
+    #
+    # The real bloat here was never precision, it was dtype: last_price carries
+    # None for never-traded markets, so pandas stored it as OBJECT -- 1.6 GB
+    # across the archive. float64 with NaN costs 8 bytes and is exact.
+    for c in ("last_price", "yes_bid", "yes_ask"):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").astype("float64")
+    # Sizes and turnover are counts, never compared against a knife-edge
+    # threshold, and float32 holds them to seven significant figures.
+    for c in ("yes_bid_size", "yes_ask_size", "volume", "open_interest", "liquidity"):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").astype("float32")
+    return df
+
+
+def _concat(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    frames = [f for f in frames if not f.empty]
+    if not frames:
+        return pd.DataFrame()
+    out = pd.concat(frames, ignore_index=True)
+    # concat of categoricals with different categories falls back to object;
+    # restoring it here keeps the saving through the join.
+    for c in _CATEGORICAL:
+        if c in out.columns and out[c].dtype == object:
+            out[c] = out[c].astype("category")
+    return out
+
+
 def load_entries(data_root: Path | None = None) -> list[Entry]:
-    """Every market we captured with a two-sided book and later saw resolve."""
+    """Every market we captured with a two-sided book and later saw resolve.
+
+    Streams the snapshot archive in two passes rather than loading it whole.
+    Pass one keeps only rows for tickers that have RESOLVED -- those become the
+    entries. Pass two keeps only rows in those entries' EVENTS, which is all
+    `_attach_context` needs for siblings. Neither pass ever holds the archive.
+
+    Two reads of the same files cost less than they look: the second is served
+    from the page cache, and the alternative was a 15 GB frame.
+    """
     root = data_root if data_root is not None else DATA_ROOT
     res_files, snap_files = _files("resolutions", root), _files("snapshots", root)
     if not res_files or not snap_files:
@@ -136,8 +205,8 @@ def load_entries(data_root: Path | None = None) -> list[Entry]:
     if res.empty:
         return []
 
-    all_snap = pd.concat([pd.read_parquet(f) for f in snap_files], ignore_index=True)
-    snap = all_snap[all_snap["ticker"].isin(set(res["ticker"]))]
+    resolved = set(res["ticker"])
+    snap = _concat([_read_snapshot(f, keep_tickers=resolved) for f in snap_files])
     if snap.empty:
         return []
 
@@ -166,11 +235,14 @@ def load_entries(data_root: Path | None = None) -> list[Entry]:
         )
         for r in j.itertuples(index=False)
     ]
-    # Siblings come from the UNFILTERED frame. `snap` holds only tickers that
-    # have resolved, and a sibling does not need to have resolved for its quote
-    # to be informative -- an unresolved leg of a mutually exclusive event is
-    # exactly the leg whose price says what the market thinks of ours.
-    return _attach_context(entries, snap, all_snap)
+    # Siblings are read in a SECOND pass, keeping only rows in these entries'
+    # events. A sibling does not need to have resolved for its quote to be
+    # informative -- an unresolved leg of a mutually exclusive event is exactly
+    # the leg whose price says what the market thinks of ours -- so it cannot
+    # come from `snap`. It does not need the whole archive either.
+    events = {e.market.event_ticker for e in entries}
+    sib_snap = _concat([_read_snapshot(f, keep_events=events) for f in snap_files])
+    return _attach_context(entries, snap, sib_snap)
 
 
 def _attach_context(
