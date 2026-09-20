@@ -272,3 +272,72 @@ def load(data_root: Path | None = None) -> list[Entry] | None:
     if ent.empty:
         return None
     return _from_frames(ent, _read("history"), _read("siblings"))
+
+
+def iter_entries(data_root: Path | None = None):
+    """Yield entries one date partition at a time, never holding the whole set.
+
+    The table is partitioned by resolution date, ~5,600 entries per partition,
+    which is a natural chunk: scoring touches each entry exactly once and never
+    looks back. Holding all 157,108 costs 2.8 GB in Python objects -- 997,418
+    MarketSnapshots and 1,562,774 PricePoints -- while the statistics scoring
+    actually keeps are three floats and a series label per entry, about 25 MB.
+    The rest is scaffolding held only because score() took a list.
+
+    Yields nothing at all if the table is cold or stale, for the same reason
+    load() returns None: a caller must not mistake "not built" for "empty".
+    """
+    import glob
+
+    root = data_root if data_root is not None else DATA_ROOT
+    if not _meta_ok(root):
+        return
+
+    def _by_partition(kind: str) -> dict[str, list[str]]:
+        out: dict[str, list[str]] = {}
+        for f in sorted(glob.glob(str(root / "entries" / kind / "date=*" / "*.parquet"))):
+            out.setdefault(Path(f).parent.name, []).append(f)
+        return out
+
+    ent_parts = _by_partition("entries")
+    hist_parts = _by_partition("history")
+    sib_parts = _by_partition("siblings")
+
+    def _read(files: list[str]) -> pd.DataFrame:
+        return (pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+                if files else pd.DataFrame())
+
+    for tag in sorted(ent_parts):
+        chunk = _from_frames(_read(ent_parts[tag]),
+                             _read(hist_parts.get(tag, [])),
+                             _read(sib_parts.get(tag, [])))
+        if chunk:
+            yield chunk
+
+
+def series_history(data_root: Path | None = None):
+    """SeriesHistory built from entry rows alone.
+
+    Needs only (series, ticker, resolved_at, outcome), so it costs ~30 MB and
+    does not require materialising price histories or siblings.
+    """
+    import glob
+
+    from experiments.kalshi_quant.observations import SeriesHistory
+
+    root = data_root if data_root is not None else DATA_ROOT
+    files = sorted(glob.glob(str(root / "entries" / "entries" / "date=*" / "*.parquet")))
+    if not files:
+        return None
+    cols = ["ticker", "series_ticker", "resolved_at", "outcome"]
+    df = pd.concat([pd.read_parquet(f, columns=cols) for f in files], ignore_index=True)
+    sh = SeriesHistory([])
+    for r in df.itertuples(index=False):
+        sh._by_series.setdefault(r.series_ticker, []).append(
+            (r.resolved_at.to_pydatetime(),
+             __import__("experiments.kalshi_quant.types", fromlist=["Resolution"]).Resolution(
+                 r.ticker, r.resolved_at.to_pydatetime(), int(r.outcome))))
+    for v in sh._by_series.values():
+        v.sort(key=lambda pair: pair[0])
+    sh._keys = {k: [t for t, _ in v] for k, v in sh._by_series.items()}
+    return sh

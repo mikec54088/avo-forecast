@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+from collections.abc import Iterable
 from datetime import datetime
 from typing import Any, Sequence
 
@@ -133,8 +134,19 @@ def paper_trade(
     same way bootstrap_ci does on skill. On this data the naive and clustered
     intervals disagree about whether a band is profitable.
     """
-    pnl: list[float] = []
     by_series: dict[str, list[float]] = {}
+    accumulate_fills(entries, forecasts, by_series, edge)
+    return pnl_stats(by_series, n_considered=len(entries))
+
+
+def accumulate_fills(entries: Sequence[Entry], forecasts: Sequence[float],
+                     by_series: dict[str, list[float]], edge: float = 0.0) -> None:
+    """Add this batch's realised fills into `by_series`, keyed by series.
+
+    Split out so the streaming scorer can accumulate across chunks without a
+    second copy of the fill rule. A duplicate would be free to drift from
+    INVARIANT #4, and the whole P&L gate rests on it.
+    """
     for e, p in zip(entries, forecasts, strict=True):
         mid = e.market.implied_prob
         if abs(p - mid) <= edge:
@@ -145,16 +157,20 @@ def paper_trade(
             continue
         price = fill.price_cents / 100.0
         won = (e.outcome == 1) if side == "yes" else (e.outcome == 0)
-        r = (1.0 - price) if won else -price
-        pnl.append(r)
-        by_series.setdefault(e.market.series_ticker, []).append(r)
+        by_series.setdefault(e.market.series_ticker, []).append(
+            (1.0 - price) if won else -price)
 
+
+def pnl_stats(by_series: dict[str, list[float]], n_considered: int) -> dict[str, float]:
+    """Mean, fill count and series-clustered error from accumulated fills."""
+    pnl = [r for v in by_series.values() for r in v]
     if not pnl:
         return {"pnl_per_contract": float("nan"), "pnl_n_fills": 0.0,
                 "pnl_fill_rate": 0.0, "pnl_se_clustered": float("nan")}
 
     mean = sum(pnl) / len(pnl)
     k = len(by_series)
+    n_considered = max(n_considered, 1)
     if k > 1:
         # Cluster-robust standard error for the POOLED mean above.
         #
@@ -184,7 +200,7 @@ def paper_trade(
     return {
         "pnl_per_contract": mean,
         "pnl_n_fills": float(len(pnl)),
-        "pnl_fill_rate": len(pnl) / len(entries),
+        "pnl_fill_rate": len(pnl) / n_considered,
         "pnl_se_clustered": se,
     }
 
@@ -211,6 +227,19 @@ class KalshiQuantExperiment:
         summary. See digest.py: computing it per agent cost 36 Bash calls an
         invocation and produced numbers no two candidates could be compared on.
         """
+        # Prefer streaming: holding all 157,108 entries costs 2.88 GB of Python
+        # objects, streaming them a partition at a time costs 0.74 GB and does
+        # not grow with the archive. Verified identical on six candidates and
+        # both subsets over the real table.
+        sh = entries_store.series_history()
+        if sh is not None:
+            self._digest = digest.load_or_build()
+            if self._digest is None:
+                # The digest needs the whole set once; pay it here, not per
+                # candidate, and only when it is missing.
+                self._digest = digest.load_or_build(entries_store.load())
+            return (lambda: entries_store.iter_entries()), sh
+
         entries = entries_store.load()
         if entries is None:
             # Cold or stale table. Falling back to the raw archive is correct
@@ -233,6 +262,7 @@ class KalshiQuantExperiment:
         entries: Sequence[Entry] | None = None,
         history: SeriesHistory | None = None,
         subset: str = "all",
+        chunks: Iterable[Sequence[Entry]] | None = None,
     ) -> Score:
         """Brier skill vs the market's implied probability (INVARIANT #2).
 
@@ -240,31 +270,72 @@ class KalshiQuantExperiment:
         candidates loads the observation set once. Both default to reading the
         captured Parquet.
         """
-        if entries is None:
-            entries = load_entries()
+        if chunks is None:
+            if entries is None:
+                entries = load_entries()
+            chunks = [entries]
         if history is None:
-            history = SeriesHistory(list(entries))
+            history = SeriesHistory(list(entries) if entries is not None else [])
 
         # `subset` splits by SERIES for selection honesty, not by market. The
         # failure guarded against is a winner that only works on whichever
         # series dominated the sample, and Kalshi's top 20 series are over half
         # of all observations -- a random market-level split would leave the
         # same series on both sides and test nothing.
-        if subset != "all":
-            want_conf = subset == "confirmation"
-            entries = [e for e in entries
-                       if is_confirmation_group(e.market.series_ticker) == want_conf]
-            if not entries:
-                return Score(candidate.candidate_id, float("nan"),
-                             (float("nan"), float("nan")), 0,
-                             notes=f"no observations in the {subset} subset")
+        want_conf = subset == "confirmation"
 
-        # INVARIANT #1: only truth that resolved strictly after this candidate
-        # existed. assert_clean afterwards is not redundant -- it is the
-        # tripwire that catches a future change to eligible().
-        keep = eligible(candidate, list(entries), lambda e: e.resolved_at)
-        assert_clean(candidate, keep, lambda e: e.resolved_at)
-        if not keep:
+        # Accumulated across chunks. These are all the scorer keeps: three
+        # floats and a label per observation, plus fills grouped by series.
+        # Entry objects never outlive their chunk, so peak memory is the chunk
+        # size rather than the dataset -- see entries_store.iter_entries.
+        obs: list[Observation] = []
+        series: list[str] = []
+        stale_vals: list[float] = []
+        by_series_pnl: dict[str, list[float]] = {}
+        n_considered = 0
+        errors = 0
+        saw_any = False
+
+        for chunk in chunks:
+            batch = chunk
+            if subset != "all":
+                batch = [e for e in batch
+                         if is_confirmation_group(e.market.series_ticker) == want_conf]
+            if batch:
+                saw_any = True
+            # INVARIANT #1: only truth that resolved strictly after this
+            # candidate existed. assert_clean afterwards is not redundant -- it
+            # is the tripwire that catches a future change to eligible().
+            keep = eligible(candidate, list(batch), lambda e: e.resolved_at)
+            assert_clean(candidate, keep, lambda e: e.resolved_at)
+            if not keep:
+                continue
+            n_considered += len(keep)
+
+            batch_scored: list[Entry] = []
+            batch_forecasts: list[float] = []
+            for e in keep:
+                try:
+                    p = float(loaded.forecast(e.market, history.context_for(e)))
+                except Exception:  # noqa: BLE001 - a broken candidate must not kill the run
+                    errors += 1
+                    continue
+                # NaN fails this comparison too, so it is caught here as well.
+                if not (0.0 <= p <= 1.0):
+                    errors += 1
+                    continue
+                obs.append(Observation(p, e.market.implied_prob, e.outcome))
+                series.append(e.market.series_ticker)
+                stale_vals.append(e.staleness_minutes)
+                batch_scored.append(e)
+                batch_forecasts.append(p)
+            accumulate_fills(batch_scored, batch_forecasts, by_series_pnl)
+
+        if not saw_any:
+            return Score(candidate.candidate_id, float("nan"),
+                         (float("nan"), float("nan")), 0,
+                         notes=f"no observations in the {subset} subset")
+        if not n_considered:
             return Score(
                 candidate_id=candidate.candidate_id,
                 primary=float("nan"),
@@ -272,24 +343,6 @@ class KalshiQuantExperiment:
                 n_observations=0,
                 notes="no observations resolved after created_at",
             )
-
-        obs: list[Observation] = []
-        scored: list[Entry] = []
-        forecasts: list[float] = []
-        errors = 0
-        for e in keep:
-            try:
-                p = float(loaded.forecast(e.market, history.context_for(e)))
-            except Exception:  # noqa: BLE001 - a broken candidate must not kill the run
-                errors += 1
-                continue
-            # NaN fails this comparison too, so it is caught here as well.
-            if not (0.0 <= p <= 1.0):
-                errors += 1
-                continue
-            obs.append(Observation(p, e.market.implied_prob, e.outcome))
-            scored.append(e)
-            forecasts.append(p)
 
         if not obs:
             return Score(
@@ -301,20 +354,20 @@ class KalshiQuantExperiment:
             )
 
         cand_brier, market_brier, skill = skill_score(obs)
+
         # primary_ci is the SERIES-CLUSTERED interval: observations are not
         # independent, and resampling them individually reported intervals 2.3x
         # narrower than the data supports (40,726 observations, 571 series,
         # top 20 series 54.8% of the set). The i.i.d. interval is kept as a
         # diagnostic -- the ratio between them says whether an edge is
         # broad-based or rests on a handful of series.
-        series = [e.market.series_ticker for e in scored]
         lo, hi = bootstrap_ci_clustered(obs, series)
         ilo, ihi = bootstrap_ci(obs)
 
         # Secondary, never selected on (INVARIANT #2). Selection sorts on
         # `primary` alone; these exist so a skill number can be read honestly.
-        stale = sorted(e.staleness_minutes for e in scored)
-        trade = paper_trade(scored, forecasts)
+        stale = sorted(stale_vals)
+        trade = pnl_stats(by_series_pnl, n_considered=n_considered)
         return Score(
             candidate_id=candidate.candidate_id,
             primary=skill,

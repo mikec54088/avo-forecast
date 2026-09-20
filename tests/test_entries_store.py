@@ -112,15 +112,76 @@ def test_scoring_prefers_the_table_and_falls_back_when_it_is_cold(data_root, mon
     monkeypatch.setattr(digest, "CACHE", data_root / "digest.json")
     exp = registry.load("kalshi_quant")
 
-    # cold: falls back, and says so
+    # cold: falls back to the raw archive, and says so
     entries, _ = exp.scoring_inputs()
+    assert not callable(entries), "cold path yields a materialised list"
     assert entries, "fallback must still produce entries"
     assert "cold or stale" in capsys.readouterr().out
+    raw_tickers = {e.ticker for e in entries}
 
-    # warm: uses the table, silently
+    # warm: yields a chunk FACTORY, not a list, and says nothing
     store.build(data_root)
-    monkeypatch.setattr(store, "DATA_ROOT", data_root)
     exp2 = registry.load("kalshi_quant")
-    cached, _ = exp2.scoring_inputs()
-    assert {e.ticker for e in cached} == {e.ticker for e in entries}
+    provider, hist = exp2.scoring_inputs()
+    assert callable(provider), "warm path must stream, not materialise"
+    assert hist is not None
+    streamed = {e.ticker for chunk in provider() for e in chunk}
+    assert streamed == raw_tickers
+    # the factory is reusable: 42 candidates each need their own pass
+    assert {e.ticker for chunk in provider() for e in chunk} == raw_tickers
     assert "cold or stale" not in capsys.readouterr().out
+
+
+def test_streaming_scores_identically_to_holding_the_whole_list(data_root, monkeypatch):
+    """The contract for the streaming path. Verified on the real archive too --
+    six candidates, both subsets, every field to 12 dp -- but pinned here so a
+    future change to chunking cannot quietly move a score."""
+    from avo.core import registry
+    from experiments.kalshi_quant import entries_store as store
+    from experiments.kalshi_quant import observations
+
+    monkeypatch.setattr(observations, "DATA_ROOT", data_root)
+    monkeypatch.setattr(store, "DATA_ROOT", data_root)
+    store.build(data_root)
+
+    exp = registry.load("kalshi_quant")
+    listed = store.load(data_root)
+    hist = store.series_history(data_root)
+    c = next(x for x in exp.seed_candidates() if x.candidate_id == "baseline_sharpened")
+    mod = exp.load_candidate(c)
+
+    def norm(v):
+        # NaN != NaN, and a tiny fixture legitimately yields NaN intervals
+        # (a bootstrap needs more than one cluster). Compare them as equal.
+        return "nan" if isinstance(v, float) and v != v else v
+
+    def fields(s):
+        return (norm(s.primary), tuple(norm(x) for x in s.primary_ci),
+                s.n_observations,
+                tuple(sorted((k, norm(v)) for k, v in s.secondary.items())))
+
+    for subset in ("all", "selection", "confirmation"):
+        a = exp.score(c, mod, entries=listed, history=hist, subset=subset)
+        b = exp.score(c, mod, chunks=store.iter_entries(data_root), history=hist,
+                      subset=subset)
+        assert fields(a) == fields(b), subset
+
+
+def test_iter_entries_yields_nothing_on_a_cold_table(data_root):
+    """Same rule as load() returning None: a caller must not read "not built"
+    as "empty", or it scores against nothing and reports success."""
+    from experiments.kalshi_quant import entries_store as store
+    assert list(store.iter_entries(data_root)) == []
+
+
+def test_the_fill_rule_has_exactly_one_implementation():
+    """paper_trade and the streaming scorer both go through accumulate_fills.
+    A second copy would be free to drift from INVARIANT #4, and the whole P&L
+    gate rests on it."""
+    import inspect
+
+    from experiments.kalshi_quant import experiment as ex
+
+    assert "accumulate_fills" in inspect.getsource(ex.paper_trade)
+    assert "accumulate_fills" in inspect.getsource(ex.KalshiQuantExperiment.score)
+    assert inspect.getsource(ex.accumulate_fills).count("simulate_fill") == 1

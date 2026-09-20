@@ -52,8 +52,16 @@ def score_all(
         except Exception as exc:  # noqa: BLE001
             print(f"  skip {c.candidate_id}: {exc!r}", flush=True)
             continue
-        out.append(experiment.score(c, loaded, entries=entries, history=history,
-                                    subset=subset))
+        # `entries` may be a callable returning a fresh chunk iterator. An
+        # iterator itself cannot be reused across 42 candidates -- it is
+        # exhausted after the first -- so the caller passes a factory and each
+        # candidate gets its own pass. Core stays ignorant of what a chunk is.
+        if callable(entries):
+            out.append(experiment.score(c, loaded, chunks=entries(),
+                                        history=history, subset=subset))
+        else:
+            out.append(experiment.score(c, loaded, entries=entries,
+                                        history=history, subset=subset))
     return out
 
 
