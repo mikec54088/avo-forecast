@@ -226,6 +226,8 @@ def test_a_dropped_connection_is_retried_not_fatal(monkeypatch):
 def test_server_errors_are_retried_but_client_errors_are_not(monkeypatch):
     """5xx is the server declining to answer; 4xx is the request being wrong,
     and repeating a malformed request just wastes the budget."""
+    import httpx
+
     c, calls = _client_with(monkeypatch, [500, 502, 200])
     assert c._get("/markets") == {"ok": True}
     assert c.server_errors == 2 and len(calls) == 3
