@@ -18,7 +18,7 @@ from avo.core.selection import (
     is_confirmation_group,
 )
 from avo.core.types import Candidate, Score
-from experiments.kalshi_quant import digest
+from experiments.kalshi_quant import digest, entries_store
 from experiments.kalshi_quant.observations import (
     ENTRY_POLICY,
     Entry,
@@ -211,7 +211,16 @@ class KalshiQuantExperiment:
         summary. See digest.py: computing it per agent cost 36 Bash calls an
         invocation and produced numbers no two candidates could be compared on.
         """
-        entries = load_entries()
+        entries = entries_store.load()
+        if entries is None:
+            # Cold or stale table. Falling back to the raw archive is correct
+            # but expensive -- 10.9 GB and 36 minutes against 2.8 GB and 10
+            # seconds -- so say which path was taken rather than being quietly
+            # slow. entries_store.load() returns None, never [], precisely so
+            # this branch cannot be confused with "there are no observations".
+            print("  entries table cold or stale; rebuilding from the raw "
+                  "archive (run `avo entries build` to materialise it)", flush=True)
+            entries = load_entries()
         if not entries:
             raise SystemExit("no observations yet; capture needs to run first")
         self._digest = digest.load_or_build(entries)

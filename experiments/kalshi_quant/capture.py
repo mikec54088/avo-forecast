@@ -95,6 +95,13 @@ SERIES_MAX_PAGES = 20
 
 
 def _write(df: pd.DataFrame, kind: str, label: str = "") -> Path:
+    """Write one pass. An empty frame still gets a file -- the absence of
+    quotable markets at an instant is itself an observation -- but it must
+    carry the SCHEMA, because pd.DataFrame([]) has no columns and a
+    column-less parquet breaks any reader that filters per file.
+    """
+    if df.empty:
+        df = pd.DataFrame(columns=list(_ROW_COLUMNS))
     now = datetime.now(timezone.utc)
     out_dir = DATA_ROOT / kind / f"date={now:%Y-%m-%d}"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -135,6 +142,15 @@ def _resolved_at(raw: dict[str, Any]) -> datetime | None:
         if ts:
             return datetime.fromisoformat(ts)
     return None
+
+
+# The snapshot schema, so an empty pass still writes a readable file.
+_ROW_COLUMNS = (
+    "ticker", "event_ticker", "series_ticker", "title", "observed_at",
+    "close_time", "yes_bid", "yes_ask", "last_price", "volume",
+    "open_interest", "yes_bid_size", "yes_ask_size", "liquidity", "status",
+    "price_level_structure", "is_mve",
+)
 
 
 def _row(m: MarketSnapshot) -> dict[str, object]:

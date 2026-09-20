@@ -272,3 +272,32 @@ def test_a_sweeps_survival_odds_are_what_motivated_this():
     survives = lambda p, n=4100: (1 - p) ** n
     assert survives(1e-4) < 0.70
     assert survives(5e-4) < 0.15
+
+
+def test_an_empty_pass_still_writes_a_readable_schema(tmp_path, monkeypatch):
+    """A sweep that finds nothing quotable used to write a COLUMN-LESS parquet,
+    because pd.DataFrame([]) has no columns to infer. Two such files landed on
+    2026-09-13 and went unnoticed for six days: the old loader concatenated
+    everything before filtering, so the missing column never surfaced. Any
+    reader that filters per file walks straight into it."""
+    import pandas as pd
+
+    from experiments.kalshi_quant import capture
+
+    monkeypatch.setattr(capture, "DATA_ROOT", tmp_path)
+    path = capture._write(pd.DataFrame(), "snapshots")
+    df = pd.read_parquet(path)
+    assert df.empty
+    assert "ticker" in df.columns and "event_ticker" in df.columns
+
+
+def test_the_loader_survives_a_column_less_snapshot(tmp_path):
+    """The two real files from 2026-09-13 must not take the archive down."""
+    import pandas as pd
+
+    from experiments.kalshi_quant.observations import _read_snapshot
+
+    p = tmp_path / "empty.parquet"
+    pd.DataFrame().to_parquet(p)
+    assert _read_snapshot(str(p), keep_tickers={"anything"}).empty
+    assert _read_snapshot(str(p), keep_events={"anything"}).empty

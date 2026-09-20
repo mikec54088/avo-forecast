@@ -16,6 +16,11 @@ def main() -> None:
 
     sub.add_parser("experiments", help="list available experiments")
 
+    ent = sub.add_parser("entries", help="materialise the entries table")
+    ent.add_argument("action", choices=["build", "status"])
+    ent.add_argument("--force", action="store_true",
+                     help="rebuild from scratch rather than appending")
+
     seeds = sub.add_parser("seeds", help="list an experiment's seed candidates")
     seeds.add_argument("experiment")
 
@@ -70,6 +75,8 @@ def main() -> None:
             print(f"{c.candidate_id:24s} gen={c.generation} {c.rationale}")
     elif args.cmd == "generate":
         _generate(args)
+    elif args.cmd == "entries":
+        _entries(args)
     elif args.cmd == "evolve":
         _evolve(args)
     elif args.cmd == "rank":
@@ -160,6 +167,32 @@ def _rank(args) -> None:
     print(f"\n{n}/{len(verdicts)} confirmed on held-out series (skill)")
     print(f"{g}/{len(verdicts)} pass the P&L gate on BOTH selection and "
           f"confirmation series")
+
+
+def _entries(args) -> None:
+    """Build or inspect the materialised entries table.
+
+    Entries are append-only: once a market resolves, the snapshot it entered
+    on, its outcome and its price path are fixed. Rebuilding them from 51M raw
+    snapshot rows on every rank costs 10.9 GB and 36 minutes; reading the table
+    costs 2.8 GB and 10 seconds.
+    """
+    from experiments.kalshi_quant import entries_store
+
+    if args.action == "status":
+        cached = entries_store.load()
+        if cached is None:
+            print("entries table: COLD or STALE (scoring will rebuild from raw)")
+            print(f"  current policy: {entries_store.policy()}")
+        else:
+            print(f"entries table: {len(cached):,} entries")
+            print(f"  policy: {entries_store.policy()}")
+        return
+
+    stats = entries_store.build(force=args.force)
+    verb = "rebuilt" if stats.rebuilt else "appended"
+    print(f"{verb}: +{stats.added:,} entries, {stats.total:,} total"
+          + (f"  ({stats.note})" if stats.note else ""))
 
 
 def _evolve(args) -> None:

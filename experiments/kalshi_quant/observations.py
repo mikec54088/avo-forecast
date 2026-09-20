@@ -142,9 +142,16 @@ def _read_snapshot(path: str, keep_tickers: set[str] | None = None,
     coexist, and peak memory stops tracking the size of the archive.
     """
     df = pd.read_parquet(path)
+    # A sweep that found nothing quotable writes a COLUMN-LESS parquet: capture
+    # builds its frame with pd.DataFrame(rows), and an empty rows list has no
+    # columns to infer. Two such files exist from 2026-09-13. The old loader
+    # never noticed, because it concatenated everything first and filtered the
+    # combined frame; filtering per file walks straight into the missing column.
+    if df.empty or "ticker" not in df.columns:
+        return pd.DataFrame()
     if keep_tickers is not None:
         df = df[df["ticker"].isin(keep_tickers)]
-    elif keep_events is not None:
+    elif keep_events is not None and "event_ticker" in df.columns:
         df = df[df["event_ticker"].isin(keep_events)]
     if df.empty:
         return df
@@ -184,7 +191,9 @@ def _concat(frames: list[pd.DataFrame]) -> pd.DataFrame:
     return out
 
 
-def load_entries(data_root: Path | None = None) -> list[Entry]:
+def load_entries(data_root: Path | None = None,
+                 only_tickers: set[str] | None = None,
+                 snapshot_files: list[str] | None = None) -> list[Entry]:
     """Every market we captured with a two-sided book and later saw resolve.
 
     Streams the snapshot archive in two passes rather than loading it whole.
@@ -196,12 +205,19 @@ def load_entries(data_root: Path | None = None) -> list[Entry]:
     from the page cache, and the alternative was a 15 GB frame.
     """
     root = data_root if data_root is not None else DATA_ROOT
-    res_files, snap_files = _files("resolutions", root), _files("snapshots", root)
+    res_files = _files("resolutions", root)
+    snap_files = snapshot_files if snapshot_files is not None else _files("snapshots", root)
     if not res_files or not snap_files:
         return []
 
     res = pd.concat([pd.read_parquet(f) for f in res_files], ignore_index=True)
     res = res[res["outcome"].notna()].drop_duplicates("ticker")
+    if only_tickers is not None:
+        # Used by entries_store to build incrementally. Restricting here rather
+        # than reimplementing the entry rule is deliberate: a second copy of
+        # "which snapshot is the entry" would be free to drift from this one,
+        # and INVARIANT #1 rests on it.
+        res = res[res["ticker"].isin(only_tickers)]
     if res.empty:
         return []
 
