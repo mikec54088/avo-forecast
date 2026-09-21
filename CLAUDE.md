@@ -149,7 +149,14 @@ Read this before proposing anything; most obvious ideas are already dead.
   231 fills, which reads as thin until you see the 86 series behind it and its
   largest contributing 7% of net P&L -- the least concentrated of the eight
   passers, against 34% for `tick_grid_conditioned`, the candidate the old sort
-  picked.
+  picked. It also REPLICATES: +0.1016 selection / +0.0948 confirmation, and
+  +0.1173 / +0.1021 in the rank before that. But it is NOT a both-halves gate
+  passer -- its confirmation half holds ~70-80 fills, below the 200 minimum, so
+  the gate is silent there and `unclimbed_favourite` remains the only
+  candidate with proof on both sides. Topping the PARENT sort is not a claim
+  about deployment. And +10.2c/contract is further outside the 1-3 point range
+  every measured bias sits in than anything yet seen; the standing skepticism
+  applies harder here, not less.
 
 - **The loop was circling, and three separate things caused it** (measured
   2026-09-20, all fixed the same day). Six generations produced 11 candidates
@@ -171,6 +178,74 @@ Read this before proposing anything; most obvious ideas are already dead.
   `favourite_longshot`, whose edge is recorded as having failed to replicate --
   answered questions, not open ones. `SelectionPolicy.maturity` /
   `maturity_floor` separate them; core never learns what a fill is.
+
+- **Generation 7 proved the quota fix the hard way.** Run 2026-09-20 on the
+  OLD code, before the abort landed: parent `ladder_leader`, both slots
+  rejected `backend exited 1: You've hit your session limit`, 0/2 accepted,
+  ~55 min of scoring spent to buy nothing. Under the fix it aborts after slot 1
+  and says why. Note what it also shows: with `-n 2` the old
+  `k = max(1, n // 4)` gives ONE parent and both slots breed from it, which is
+  the exploit-only monoculture the explore slot now breaks.
+
+### The research track, measured 2026-09-20
+
+Running clean and not yet evaluable. launchd at :50 hourly, exit 0, 12 days of
+partitions, **45,214 forecasts, zero errors** (`error` and `research_error` are
+empty strings on every row). Three candidates: `research_market` (the
+no-research control, 22,931), `roster_news_favourite` (21,253),
+`injury_news_favourite` (1,030).
+
+The funnel is the whole story:
+
+| stage | count |
+|---|---|
+| forecasts logged | 45,214 |
+| research actually ran | 512 |
+| ...and the forecast disagreed with the market | ~20 |
+| ...resolved, so it can be scored | **13** |
+
+- **Median `|forecast - mid|` across all 512 research calls is 0.0000.** The v2
+  negation-safe VERDICT parsing is working -- it fires only on a sourced report
+  and usually there is not one -- but the consequence is that eleven days of
+  research produced thirteen decisions capable of earning or losing anything.
+- **THE RATE IS THE PROBLEM, not the budget.** ~1.3 actionable resolved
+  decisions/day means ~5 MONTHS to reach `PNL_GATE_MIN_FILLS = 200`. The
+  per-pass cap is 25 with hourly passes (600/day theoretical) against 512 used
+  in ten days, so the cap is nowhere near binding. Qualifying markets are the
+  bottleneck. Waiting does not fix this; the candidate design has to.
+- **Every one of the 13 is a fade of exactly -0.040.** `roster_news_favourite`
+  ends `return max(p - SHIFT, 0.5 + EPS)` with `SHIFT = 0.04`: fixed magnitude,
+  one direction, never a boost, no expression of confidence. That is why 512
+  research calls collapse to ~20 opinions.
+- **Direction right: 5 of 13.** Read the +0.0186 skill as a TRIPWIRE, not a
+  result. Thirteen observations, and the sign is structurally flattered:
+  shrinking a favourite toward 0.5 gains ~2.7x on each miss what it loses on
+  each hit, so it reads positive while being wrong 8 times in 13. This is
+  precisely the `baseline_sharpened` trap Phase 2 built a control for.
+
+**CLAUDE.md's G5 line below is STALE** -- it still says `status = "planned"`
+while the track has run for eleven days with 45k forecasts on disk. Left alone
+deliberately: G5 is a stop-and-ask gate, the authorisation lives in
+`docs/PLAN-2026-09-09.md`, and rewriting a gate record is the human's call.
+
+### Potential direction: invert the scoring loop (not built)
+
+`avo rank` takes ~54 min because `score_all` loops candidates OUTER and each
+one re-reads the whole entries table -- 84 candidates x 2 subsets = 168 passes.
+Inverting it (one pass over chunks, candidates inner) was measured on
+2026-09-20 while computing cluster counts and is much faster.
+
+It is NOT a memory regression, which was the reason to suspect it: `Observation`
+is 48 bytes and all 44 scored candidates hold 3.33M kept observations, so
+holding every accumulator at once costs ~0.24 GB (~0.46 GB at the full 84)
+against 0.74 GB for the chunk and history. Peak goes ~0.74 -> ~1.2 GB, nowhere
+near the cliff that motivated streaming.
+
+The real cost is that it touches `core/loop.py` and the `score()` interface --
+a new `score_many` entry point, not a tweak -- to save wall clock on a batch
+job nothing is blocked on. Land it with the same before/after equality check
+the entries-table and streaming changes got: every candidate, both subsets,
+zero mismatches.
 
 ### Potential direction: an INVENTION slot (not built, revisit)
 
