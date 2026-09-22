@@ -115,23 +115,39 @@ def pool_changed(
     pool it selects from has actually changed -- a new candidate appearing, or
     an existing one crossing a verdict boundary.
     """
-    gens = memory.generations()
-    if not gens:
+    all_gens = memory.generations()
+    if not all_gens:
         return True, "first generation"
+
+    # The baseline is the last generation that actually got to breed. A run
+    # the backend's quota cut short never asked its parents for anything, so
+    # it cannot testify that this pool was consumed -- and letting it set the
+    # baseline is strictly worse than the circling the gate was built to stop:
+    # the gate then suppresses the very retry the abort made necessary.
+    # Measured 2026-09-21: gen007 lost both slots to the session limit, still
+    # wrote a 44-score baseline, and gen008 skipped against it. Two generations
+    # in a row produced nothing and the loop reported that as working.
+    gens = [g for g in all_gens if not g.aborted]
+    if not gens:
+        return True, "every prior generation was cut short before it could breed"
+
+    base = gens[-1]
     prev_scores = [Score(**{k: (tuple(v) if k == "primary_ci" else v)
                             for k, v in d.items()})
-                   for d in gens[-1].scores]
+                   for d in base.scores]
     before = pool_signature(policy, prev_scores)
     after = pool_signature(policy, scored)
     if not before:
         return True, "no prior scores recorded"
+    since = f" since generation {base.generation}"
     new_ids = set(after) - set(before)
     if new_ids:
-        return True, f"{len(new_ids)} new candidate(s) scored"
+        return True, f"{len(new_ids)} new candidate(s) scored{since}"
     moved = [c for c in after if before.get(c) != after[c]]
     if moved:
-        return True, f"{len(moved)} verdict(s) changed: {', '.join(sorted(moved)[:3])}"
-    return False, "no candidate is new and no verdict has moved"
+        return True, (f"{len(moved)} verdict(s) changed{since}: "
+                      f"{', '.join(sorted(moved)[:3])}")
+    return False, f"no candidate is new and no verdict has moved{since}"
 
 
 def run_generation(
@@ -211,6 +227,9 @@ def run_generation(
         scores=[asdict(s) for s in prior],
         notes=(f"{len(made)}/{n_candidates} accepted"
                + (f"; {stopped}" if stopped else "")),
+        # Recorded so the cadence gate can tell "this pool has been bred from"
+        # apart from "the account ran out of money mid-batch".
+        aborted=bool(stopped),
     )
     memory.record_generation(rec)
     memory.record_scores(generation, prior, "selection")

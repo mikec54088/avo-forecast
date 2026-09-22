@@ -29,6 +29,12 @@ class GenerationRecord:
     verdicts: list[dict] = field(default_factory=list)
     parents: list[str] = field(default_factory=list)
     notes: str = ""
+    # True when the batch stopped early because the backend ran out of budget.
+    # Such a generation never got its chance at the pool, so pool_changed()
+    # must not treat it as evidence that the pool was already consumed --
+    # see the baseline selection there. Defaults False so records written
+    # before this field existed load unchanged.
+    aborted: bool = False
 
 
 class RunMemory:
@@ -56,6 +62,32 @@ class RunMemory:
     ) -> None:
         path = self.dir / f"gen{generation:03d}-scores-{subset}.json"
         path.write_text(json.dumps([asdict(s) for s in scores], indent=1, default=str))
+
+    def record_scan(
+        self, generation: int, scores: Sequence[Score], why: str
+    ) -> Path:
+        """Persist a scoring pass that did NOT lead to a generation.
+
+        The cadence gate has to score everything before it can know whether a
+        verdict moved -- roughly 36 minutes over 157,000 observations on
+        2026-09-21 -- and the skip path then dropped that work on the floor.
+        Nothing recorded how close any candidate was to a boundary, so the
+        question the gate had just answered ("is it nearly time?") could only
+        be re-answered by paying for it again.
+
+        Deliberately NOT named gen###.json: `generations()` globs that pattern
+        to build the cadence baseline, and a scan is not a generation. A scan
+        that could become a baseline would defeat the gate it serves.
+        """
+        stamp = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"
+        path = self.dir / f"scan-{stamp}.json"
+        path.write_text(json.dumps({
+            "generation_not_run": generation,
+            "scanned_at": stamp,
+            "why": why,
+            "scores": [asdict(s) for s in scores],
+        }, indent=1, default=str))
+        return path
 
     def generations(self) -> list[GenerationRecord]:
         return [GenerationRecord(**json.loads(f.read_text()))

@@ -287,10 +287,19 @@ def _evolve(args) -> None:
             # full agentic session each time to do it.
             changed, why = pool_changed(policy, current, memory)
             if not changed and not args.force:
+                # Keep the scoring pass. Reaching this line cost a full pass
+                # over the entries table -- the gate cannot know a verdict
+                # moved without recomputing it -- and dropping the result
+                # meant nothing on disk said how close anything was to a
+                # boundary, so the same question cost the same 36 minutes the
+                # next night. A scan is not a generation and is never a
+                # cadence baseline; see RunMemory.record_scan.
+                scan = memory.record_scan(g, current, why)
                 print(f"  generation {g} skipped: {why}.\n"
                       "  Parents would be identical to the last generation, so this "
                       "would spend a session\n  re-deriving them. Wait for markets "
-                      "to resolve, or pass --force knowingly.")
+                      "to resolve, or pass --force knowingly.\n"
+                      f"  scan kept -> {scan.relative_to(repo_root)}")
                 break
             print(f"  pool: {why}")
 

@@ -378,6 +378,106 @@ def test_a_verdict_crossing_earns_a_generation(tmp_path):
     assert changed and "verdict(s) changed" in why
 
 
+def test_a_quota_aborted_generation_is_not_the_cadence_baseline(tmp_path):
+    """The failure measured 2026-09-21, and the nastiest kind: two fixes that
+    are each right and together do nothing. gen007 lost both slots to the
+    session limit, recorded its 44 scores anyway, and gen008 compared against
+    that record, found nothing moved and skipped -- so the abort fix stopped
+    the quota burn and the cadence gate then suppressed the retry it made
+    necessary. Two generations produced nothing and the loop called it working.
+    """
+    from dataclasses import asdict
+
+    from avo.core.loop import pool_changed
+    from avo.core.memory import GenerationRecord, RunMemory
+
+    scored = [_score("a", 0.001, (0.0005, 0.002))]
+    pol = SelectionPolicy(gate=_gate_from({"a": GATE_PASS}))
+    mem = RunMemory("r", root=tmp_path)
+
+    # A generation that bred normally. Nothing has moved since, so it holds.
+    mem.record_generation(GenerationRecord(
+        generation=1, started_at="", backend="fake", candidate_ids=["a"],
+        parents=[], scores=[asdict(s) for s in scored], notes="1/2 accepted"))
+    assert not pool_changed(pol, scored, mem)[0]
+
+    # One cut short by quota. It asked its parents for nothing, so it must not
+    # be able to answer for the pool -- the baseline stays generation 1, and
+    # the answer must not change just because a failed run happened.
+    mem.record_generation(GenerationRecord(
+        generation=2, started_at="", backend="fake", candidate_ids=[],
+        parents=[], scores=[asdict(s) for s in scored],
+        notes="0/2 accepted; aborted after 1/2: backend out of budget",
+        aborted=True))
+
+    changed, why = pool_changed(pol, scored, mem)
+    assert not changed, "an abort must not invent a pool change either"
+    assert "generation 1" in why, f"baseline should skip the aborted run: {why}"
+
+
+def test_an_abort_does_not_hide_a_change_that_predates_it(tmp_path):
+    """The case that actually unsticks a run: a candidate appears, the
+    generation that should have bred from it dies on quota, and the next night
+    must still see it. Comparing against the aborted record would not."""
+    from dataclasses import asdict
+
+    from avo.core.loop import pool_changed
+    from avo.core.memory import GenerationRecord, RunMemory
+
+    before = [_score("a", 0.001, (0.0005, 0.002))]
+    after = before + [_score("newborn", 0.003, (0.002, 0.004))]
+    pol = SelectionPolicy(gate=_gate_from({"a": GATE_PASS}))
+    mem = RunMemory("r", root=tmp_path)
+
+    mem.record_generation(GenerationRecord(
+        generation=1, started_at="", backend="fake", candidate_ids=["a"],
+        parents=[], scores=[asdict(s) for s in before], notes="1/2 accepted"))
+    # The aborted run scored the newborn but never bred from it.
+    mem.record_generation(GenerationRecord(
+        generation=2, started_at="", backend="fake", candidate_ids=[],
+        parents=[], scores=[asdict(s) for s in after],
+        notes="0/2 accepted; aborted", aborted=True))
+
+    changed, why = pool_changed(pol, after, mem)
+    assert changed and "new candidate" in why, why
+
+
+def test_a_record_written_before_the_aborted_field_still_loads(tmp_path):
+    """gen001-gen007 on disk have no `aborted` key. They must keep loading as
+    completed generations rather than crashing the gate."""
+    import json
+
+    from avo.core.memory import RunMemory
+
+    mem = RunMemory("r", root=tmp_path)
+    (mem.dir / "gen001.json").write_text(json.dumps({
+        "generation": 1, "started_at": "", "backend": "fake",
+        "candidate_ids": [], "scores": [], "verdicts": [], "parents": [],
+        "notes": "0/2 accepted"}))
+    gens = mem.generations()
+    assert len(gens) == 1 and gens[0].aborted is False
+
+
+def test_a_skipped_scan_is_kept_and_is_never_a_baseline(tmp_path):
+    """The scoring pass behind a skip is expensive and was being discarded.
+    Keeping it must not make it a generation: generations() globs gen###.json
+    to build the cadence baseline, and a scan that landed there would defeat
+    the gate it was recorded to serve."""
+    import json
+
+    from avo.core.memory import RunMemory
+
+    mem = RunMemory("r", root=tmp_path)
+    scored = [_score("a", 0.001, (0.0005, 0.002))]
+    path = mem.record_scan(8, scored, "no candidate is new")
+
+    assert path.exists() and mem.generations() == []
+    kept = json.loads(path.read_text())
+    assert kept["generation_not_run"] == 8
+    assert kept["why"] == "no candidate is new"
+    assert [s["candidate_id"] for s in kept["scores"]] == ["a"]
+
+
 def test_explore_skips_candidates_that_are_flat_rather_than_young():
     """The bug this catches shipped for ten minutes on 2026-09-20. GATE_UNPROVEN
     means two opposite things -- 'too few fills to judge' and 'measured, and
