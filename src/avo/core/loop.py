@@ -99,8 +99,27 @@ def ready_to_rank(
 
 
 def pool_signature(policy: SelectionPolicy, scored: Sequence[Score]) -> dict[str, int]:
-    """Each candidate's gate verdict -- what selection would actually act on."""
-    return {s.candidate_id: policy.verdict(s) for s in scored}
+    """Each candidate's gate verdict -- what selection would actually act on.
+
+    Excluded candidates are left out, and that is the whole point of the word
+    "actually". SelectionPolicy.eligible() drops controls because a control is
+    an instrument and improving it destroys its use; it follows that a control
+    can NEVER become a parent, whatever its numbers do, so neither its
+    appearance nor a move in its verdict is ever a reason to spend a
+    generation.
+
+    Measured 2026-09-22: adding control_news_fade_band to the registry moved
+    the signature, gen008 read "1 new candidate(s) scored", and a full agentic
+    session was spent breeding from parents that had not changed. The gate is
+    meant to ask whether the SELECTABLE pool moved.
+
+    Only identity-based exclusions are applied. The rest of eligible() -- the
+    observation floor, the positive-skill requirement, the gate filter -- is
+    deliberately NOT applied here: a candidate crossing one of those thresholds
+    is exactly the evidence the cadence gate exists to notice.
+    """
+    return {s.candidate_id: policy.verdict(s)
+            for s in scored if s.candidate_id not in policy.exclude}
 
 
 def pool_changed(

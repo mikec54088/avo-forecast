@@ -458,6 +458,77 @@ def test_a_record_written_before_the_aborted_field_still_loads(tmp_path):
     assert len(gens) == 1 and gens[0].aborted is False
 
 
+def test_adding_a_control_does_not_earn_a_generation(tmp_path):
+    """Measured 2026-09-22. control_news_fade_band was added to the registry to
+    give the research track something to be read against; gen008 then reported
+    "1 new candidate(s) scored" and spent a full agentic session breeding from
+    parents that had not moved. A control can never be a parent -- eligible()
+    drops it by identity -- so neither its arrival nor its verdict is evidence
+    about the pool selection would act on."""
+    from dataclasses import asdict
+
+    from avo.core.loop import pool_changed
+    from avo.core.memory import GenerationRecord, RunMemory
+
+    before = [_score("a", 0.001, (0.0005, 0.002))]
+    pol = SelectionPolicy(exclude=["a_control"],
+                          gate=_gate_from({"a": GATE_PASS}))
+    mem = RunMemory("r", root=tmp_path)
+    mem.record_generation(GenerationRecord(
+        generation=1, started_at="", backend="fake", candidate_ids=["a"],
+        parents=[], scores=[asdict(s) for s in before], notes="1/2 accepted"))
+
+    after = before + [_score("a_control", 0.002, (0.001, 0.003))]
+    changed, why = pool_changed(pol, after, mem)
+    assert not changed, f"a control must not buy a generation: {why}"
+
+
+def test_a_real_candidate_still_earns_one_alongside_a_control(tmp_path):
+    """The fix must not be a mute button: a genuine newcomer arriving in the
+    same pass as a control is still a pool change."""
+    from dataclasses import asdict
+
+    from avo.core.loop import pool_changed
+    from avo.core.memory import GenerationRecord, RunMemory
+
+    before = [_score("a", 0.001, (0.0005, 0.002))]
+    pol = SelectionPolicy(exclude=["a_control"],
+                          gate=_gate_from({"a": GATE_PASS}))
+    mem = RunMemory("r", root=tmp_path)
+    mem.record_generation(GenerationRecord(
+        generation=1, started_at="", backend="fake", candidate_ids=["a"],
+        parents=[], scores=[asdict(s) for s in before], notes="1/2 accepted"))
+
+    after = before + [_score("a_control", 0.002, (0.001, 0.003)),
+                      _score("newborn", 0.003, (0.002, 0.004))]
+    changed, why = pool_changed(pol, after, mem)
+    assert changed and "1 new candidate" in why, why
+
+
+def test_a_controls_verdict_moving_does_not_earn_a_generation(tmp_path):
+    """The other half: a control already in the pool whose verdict crosses."""
+    from dataclasses import asdict
+
+    from avo.core.loop import pool_changed
+    from avo.core.memory import GenerationRecord, RunMemory
+
+    pol = SelectionPolicy(
+        exclude=["a_control"],
+        gate=lambda s: ((GATE_PASS if s.n_observations >= 1000
+                         else GATE_UNPROVEN), ""))
+    before = [_score("a", 0.001, (0.0005, 0.002), n=5000),
+              _score("a_control", 0.002, (0.001, 0.003), n=10)]
+    mem = RunMemory("r", root=tmp_path)
+    mem.record_generation(GenerationRecord(
+        generation=1, started_at="", backend="fake", candidate_ids=["a"],
+        parents=[], scores=[asdict(s) for s in before], notes="1/2 accepted"))
+
+    grown = [_score("a", 0.001, (0.0005, 0.002), n=5000),
+             _score("a_control", 0.002, (0.001, 0.003), n=90_000)]
+    changed, why = pool_changed(pol, grown, mem)
+    assert not changed, f"a control crossing a threshold is not news: {why}"
+
+
 def test_a_skipped_scan_is_kept_and_is_never_a_baseline(tmp_path):
     """The scoring pass behind a skip is expensive and was being discarded.
     Keeping it must not make it a generation: generations() globs gen###.json
