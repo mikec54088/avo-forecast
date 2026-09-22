@@ -584,6 +584,28 @@ class KalshiQuantExperiment:
             "intervals, a control with the gate inverted, what would falsify "
             "it, where it is weak), not the idea. Your idea must differ.",
             "",
+            "THE SHAPE OF THIS SESSION -- read this before you plan anything. "
+            "You are ONE non-interactive invocation with a hard timeout, not a "
+            "conversation. There is no later turn. Nothing will notify you, "
+            "nothing will resume you, and when this session ends anything you "
+            "have not yet written is lost. So do NOT schedule a wakeup, set a "
+            "monitor, spawn a subagent, or start a background job and wait for "
+            "it: waiting is how this fails. Measured on 2026-09-20 and "
+            "2026-09-22, three of four generation slots died exactly here, "
+            "each ending on a line like 'I will wait for the completion "
+            "notification rather than continuing to poll' -- one of them "
+            "stopping voluntarily at 16 minutes with no file written. If you "
+            "want a number you do not have, either derive it from the DATASET "
+            "section below or do without it and say so in the docstring.",
+            "",
+            "DO NOT RE-CHARACTERISE THE DATASET. The DATASET section below is "
+            "computed once per run over every resolved observation, precisely "
+            "so that you do not have to. Loading the raw snapshot archive is a "
+            "2GB join that takes 20+ minutes and will consume this session "
+            "before you write anything -- that is the single most common way a "
+            "generation has produced nothing. Small targeted checks against "
+            "the entries store are fine; a full scan is not.",
+            "",
             "THE GOVERNING CONSTRAINT. Crossing the spread plus fees costs about "
             "2 probability points even on the tightest books, while every bias "
             "measured so far is 1-3 points. A candidate must beat the midpoint "

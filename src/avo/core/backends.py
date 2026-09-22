@@ -154,14 +154,57 @@ def _version(executable: str) -> str:
         return "unknown"
 
 
+# Tools that assume the session will still be there later. A generation is one
+# `claude -p` with a hard timeout and no re-invocation, so every one of these
+# is a way to end the run having written nothing: the agent hands work to a
+# future turn that does not exist.
+#
+# This is not hypothetical. Three of the four generation slots run on
+# 2026-09-20 and 2026-09-22 died here, each on a line like "I will wait for the
+# completion notification rather than continuing to poll" -- one of them
+# stopping voluntarily at 16 minutes, well inside its timeout, with no
+# candidate file written.
+#
+# The prompt says this too (see variation_prompt). It is repeated here because
+# an instruction is advice an agent can reason its way past, while a denied
+# tool is not. Bash keeps `run_in_background`, which cannot be denied by name;
+# that half stays the prompt's job.
+_PARKING_TOOLS = (
+    "ScheduleWakeup",   # schedules a turn that will never arrive
+    "Monitor",          # blocks on a condition nothing will report
+    "Agent",            # subagent results arrive asynchronously, and multiply quota
+    "TaskOutput",
+    "TaskStop",
+    "ListAgents",
+    "SendMessage",
+)
+
+
 def claude_backend(model: str | None = None, extra: Sequence[str] = ()) -> SubprocessBackend:
     """`claude -p`, non-interactive.
 
     --permission-mode acceptEdits lets it write the candidate without prompting;
     there is no human at the keyboard during a generation run.
+
+    --disallowedTools removes the tools that only make sense in a session with
+    a future; see _PARKING_TOOLS for what each one cost.
     """
     exe = resolve_cli("claude")
-    argv = [exe, "-p", "--permission-mode", "acceptEdits"]
+    # --disallowedTools goes FIRST, before -p, and the ordering is load-bearing.
+    # The flag is variadic, and SubprocessBackend appends the prompt as the
+    # final positional argument, so with the flag last the prompt is eaten as
+    # a list of tool names. Verified against the real CLI on 2026-09-22:
+    #
+    #   claude -p ... --disallowedTools A B "Reply with exactly: OK"
+    #     Permission deny rule "Reply" matches no known tool -- check for typos.
+    #     ...
+    #     Error: Input must be provided either through stdin or as a prompt
+    #
+    # A comma-joined value does not help; the variadic still takes the next
+    # positional. Putting it first lets -p terminate the list, and something
+    # always follows because -p and --permission-mode are unconditional.
+    argv = [exe, "--disallowedTools", *_PARKING_TOOLS,
+            "-p", "--permission-mode", "acceptEdits"]
     if model:
         argv += ["--model", model]
     argv += list(extra)
