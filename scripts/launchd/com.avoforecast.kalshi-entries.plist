@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.avoforecast.kalshi-entries</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/hermesagent/miniconda3/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>-m</string>
+        <string>avo.cli</string>
+        <string>entries</string>
+        <string>build</string>
+    </array>
+
+    <!-- No --force. The build APPENDS: it keys off resolutions this store has
+         not yet considered, so the daily run is small and a from-scratch
+         rebuild is a manual decision, not a nightly cost. -->
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/hermesagent/.local/bin:/Users/hermesagent/miniconda3/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/hermesagent/development/avo-forecast</string>
+
+    <!-- WHY THIS JOB EXISTS. Capture ran faithfully for three days into a table
+         nothing folded it into. The entries table was built 2026-09-20T01:49Z
+         and `avo entries build` was a manual command with no schedule behind
+         it, so by 09-22 it was two days behind: three candidates written after
+         that timestamp had zero eligible observations and could never get any
+         (INVARIANT #1 scores only on ground truth resolving after created_at),
+         and the cadence gate compared a frozen dataset against itself for
+         three generations -- identical 157,108 observations and identical fill
+         counts, so "no verdict has moved" was arithmetic, not evidence.
+
+         Capture jobs were scheduled the day they were written; this one was
+         not, and it sits between capture and every number the project
+         produces.
+
+         02:00 daily. Ahead of evolve at 03:35 by 95 minutes, because evolve now
+         REFUSES a table more than a day behind (see
+         experiment.MAX_ENTRIES_STALENESS_DAYS) and a build still running at
+         03:35 would take the nightly generation down with it. Behind the 01:52
+         settle so the night's resolutions are already on disk; the hour of
+         settlements after it is immaterial against a one-day tolerance.
+
+         Verify the way the README insists -- that data lands, not that a job is
+         loaded:
+             uv run python -m avo.cli entries status
+             ls data/kalshi_quant/entries/entries/ | tail -3   # today's date -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>2</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/entries.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/entries.log</string>
+
+    <!-- FALSE. Like evolve and unlike the capture jobs: this one is heavy, and
+         loading it should not kick off a build on top of whatever is running. -->
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

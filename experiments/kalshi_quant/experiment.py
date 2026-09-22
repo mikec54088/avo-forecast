@@ -36,6 +36,10 @@ from experiments.kalshi_quant.scoring import (
 
 CONTRACT = "forecast(market: MarketSnapshot, context: ForecastContext) -> float"
 
+# How far the entries table may lag captured resolutions before scoring refuses
+# to run. See scoring_inputs(); one day is normal, two means a missed rebuild.
+MAX_ENTRIES_STALENESS_DAYS = 1.0
+
 
 # The P&L gate. ROADMAP Phase 2 calls for a "pessimistic fill model for the
 # secondary P&L gate"; this is the gate half. It does NOT touch fitness --
@@ -252,6 +256,26 @@ class KalshiQuantExperiment:
         # objects, streaming them a partition at a time costs 0.74 GB and does
         # not grow with the archive. Verified identical on six candidates and
         # both subsets over the real table.
+        # Refuse a table that capture has outrun. _meta_ok() checks the POLICY
+        # only, so before this a store built days ago loaded happily and every
+        # score, every gate verdict and every cadence decision was computed
+        # against frozen data -- see entries_store.freshness for what that cost
+        # between 2026-09-20 and 09-22. Fail loudly rather than return a
+        # confident ranking of stale numbers: this is the "runs, exits 0, does
+        # the wrong work" failure scripts/launchd/README.md is written against.
+        #
+        # One day of tolerance because the newest resolution partition is still
+        # being written during the day; two means a rebuild was missed.
+        behind = entries_store.stale_by_days()
+        if behind > MAX_ENTRIES_STALENESS_DAYS:
+            ent, res = entries_store.freshness()
+            raise SystemExit(
+                f"entries table is {behind:.0f} days behind capture "
+                f"({ent} vs resolutions {res}).\n"
+                "Every candidate created since it was built would score zero "
+                "observations, and no verdict could move.\n"
+                "Run `uv run python -m avo.cli entries build` first.")
+
         sh = entries_store.series_history()
         if sh is not None:
             self._digest = digest.load_or_build()

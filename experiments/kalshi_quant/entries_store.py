@@ -94,6 +94,67 @@ def _meta_ok(root: Path) -> bool:
         return False
 
 
+def freshness(data_root: Path | None = None) -> tuple[str | None, str | None]:
+    """(newest entries partition, newest resolutions partition), as date=YYYY-MM-DD.
+
+    _meta_ok() checks only that the POLICY matches, so a store built weeks ago
+    loads happily and every caller scores against frozen data. Measured
+    2026-09-22: the table was built 2026-09-20T01:49Z and never rebuilt, while
+    capture kept writing resolutions through 09-22. Three candidates written
+    after that timestamp had zero eligible observations and would have had zero
+    forever -- INVARIANT #1 scores a candidate only on ground truth resolving
+    after it was created, and no such ground truth had been ingested. The
+    cadence gate meanwhile compared a static dataset against itself across
+    gen006, gen007 and gen008: identical 157,108 observations, identical fill
+    counts, and three "no verdict has moved" skips that were arithmetic rather
+    than evidence.
+
+    Returns None for either side that does not exist yet.
+    """
+    from datetime import date
+    root = data_root if data_root is not None else DATA_ROOT
+
+    def newest(d: Path) -> str | None:
+        if not d.is_dir():
+            return None
+        # Only names that actually parse as a date. Sorting the raw names would
+        # let one stray directory become the maximum -- "date=tmp" sorts above
+        # every real partition -- and silently disable the staleness guard,
+        # which is the same class of quiet failure the guard exists to catch.
+        parts = []
+        for x in d.iterdir():
+            if not x.is_dir() or not x.name.startswith("date="):
+                continue
+            try:
+                date.fromisoformat(x.name.removeprefix("date="))
+            except ValueError:
+                continue
+            parts.append(x.name)
+        return max(parts) if parts else None
+
+    return newest(root / "entries" / "entries"), newest(root / "resolutions")
+
+
+def stale_by_days(data_root: Path | None = None) -> float:
+    """How many days of captured resolutions the entries table has not ingested.
+
+    0.0 when current or when there is nothing to compare against. Deliberately
+    a number rather than a bool: the caller decides the tolerance, because the
+    newest resolution partition is still being written during the day and one
+    day behind is normal rather than broken.
+    """
+    from datetime import date
+    ent, res = freshness(data_root)
+    if ent is None or res is None:
+        return 0.0
+    try:
+        a = date.fromisoformat(ent.removeprefix("date="))
+        b = date.fromisoformat(res.removeprefix("date="))
+    except ValueError:
+        return 0.0
+    return max(0.0, (b - a).days)
+
+
 def _processed_tickers(root: Path) -> set[str]:
     """Every resolved ticker this store has already CONSIDERED.
 
