@@ -5,6 +5,7 @@ No network. The runner is driven with a synthetic near-pass frame.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import ClassVar
 
 import pandas as pd
@@ -209,3 +210,72 @@ def _mk(ticker="T1"):
     return MarketSnapshot(ticker, "E", "S", "t", NOW - timedelta(minutes=2),
                           NOW + timedelta(hours=1), 0.70, 0.72, None, 100.0, 50.0,
                           yes_bid_size=4000.0, yes_ask_size=4000.0)
+
+
+# ------------------------------------------------- the full-pass source (2026-09-24)
+
+def test_the_quote_source_is_recorded_on_every_decision(tmp_path):
+    """The whole point of adding the hourly pass is that its quotes are older,
+    and the honest way to carry that is to measure what it costs rather than
+    argue about it. A decision that does not say where its price came from
+    cannot be compared against one that does."""
+    exp = _Exp({"buyer": _Buyer()})
+    near = _frame(2)
+    near["quote_source"] = "near"
+    full = _frame(2)
+    full["ticker"] = ["F0", "F1"]
+    full["quote_source"] = "full"
+    _, st = run_pass(pd.concat([near, full], ignore_index=True), _frame(0),
+                     now=NOW, root=tmp_path, candidates=("buyer",), experiment=exp)
+    df = paper_log.read(tmp_path)
+    assert st["acted_near"] == 2 and st["acted_full"] == 2
+    assert set(df.loc[df.ticker.str.startswith("F"), "quote_source"]) == {"full"}
+    assert set(df.loc[df.ticker.str.startswith("T"), "quote_source"]) == {"near"}
+
+
+def test_a_frame_without_the_column_is_still_near(tmp_path):
+    """run_pass must not require the caller to tag rows. The near path has run
+    since 2026-09-17 and a new source must not be able to break it."""
+    exp = _Exp({"buyer": _Buyer()})
+    _, st = run_pass(_frame(2), _frame(0), now=NOW, root=tmp_path,
+                     candidates=("buyer",), experiment=exp)
+    df = paper_log.read(tmp_path)
+    assert st["acted_near"] == 2 and st["acted_full"] == 0
+    assert set(df["quote_source"]) == {"near"}
+
+
+def test_the_two_sources_partition_the_universe():
+    """NEAR_HORIZON_HOURS must equal the near pass's own --max-close-hours. If
+    they disagree the same market arrives from two books in one pass, and a
+    market is supposed to be decided once -- the first decision is the one that
+    stands, exactly as it would if real money had gone in."""
+    import re
+
+    from experiments.kalshi_quant.paper_runner import NEAR_HORIZON_HOURS
+    plist = (Path(__file__).resolve().parents[1] / "scripts" / "launchd"
+             / "com.avoforecast.kalshi-snapshot-near.plist").read_text()
+    m = re.search(r"--max-close-hours</string>\s*<string>([\d.]+)</string>", plist)
+    assert m, "near plist no longer passes --max-close-hours"
+    assert float(m.group(1)) == NEAR_HORIZON_HOURS
+
+
+def test_hours_to_close_splits_on_the_boundary():
+    from experiments.kalshi_quant.paper_runner import hours_to_close
+    df = pd.DataFrame({"close_time": [NOW + timedelta(hours=h) for h in (1, 23.9, 48, 100)]})
+    h = hours_to_close(df, NOW)
+    assert list(h > 24.0) == [False, False, True, True]
+
+
+def test_old_rows_without_a_source_still_load(tmp_path):
+    """Every paper row written before 2026-09-24 predates the column and is
+    'near' by construction. Reading them back must not raise."""
+    exp = _Exp({"buyer": _Buyer()})
+    run_pass(_frame(1), _frame(0), now=NOW, root=tmp_path,
+             candidates=("buyer",), experiment=exp)
+    import glob
+    f = glob.glob(str(Path(tmp_path) / "paper" / "date=*" / "*.parquet"))[0]
+    old = pd.read_parquet(f).drop(columns=["quote_source"])
+    old.to_parquet(f, index=False)
+    df = paper_log.read(tmp_path)
+    assert len(df) == 1
+    assert "quote_source" not in df.columns or df["quote_source"].isna().all()

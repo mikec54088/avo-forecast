@@ -49,12 +49,18 @@ COLS = [
     "forecast", "market_prob", "yes_bid", "yes_ask", "yes_bid_size",
     "yes_ask_size", "last_price", "volume", "open_interest",
     "acted", "side", "contracts", "fill_price_cents", "fill_reason", "error",
+    # Which capture pass the quote came from: "near" (<=24h to close, at most
+    # ~15 min old) or "full" (the hourly sweep, up to ~85 min old). Recorded
+    # per decision so the cost of the older quote can be measured instead of
+    # argued about -- see paper_runner.MAX_FULL_QUOTE_AGE_MIN. Rows written
+    # before 2026-09-24 have no value here and are all "near" by construction.
+    "quote_source",
 ]
 
 
 def row(candidate_id: str, m: MarketSnapshot, forecast: float,
         decided_at: datetime, desired_contracts: int = 100,
-        error: str = "") -> dict[str, object]:
+        error: str = "", quote_source: str = "near") -> dict[str, object]:
     """One decision, with the book as it stood and the fill it would have got.
 
     `acted` is recorded rather than inferred later: whether a candidate took a
@@ -81,6 +87,7 @@ def row(candidate_id: str, m: MarketSnapshot, forecast: float,
         "fill_price_cents": (fill.price_cents if fill and fill.filled else float("nan")),
         "fill_reason": (fill.reason if fill else ""),
         "error": error,
+        "quote_source": quote_source,
     }
 
 
