@@ -11,3 +11,8 @@ __pycache__/
 .mypy_cache/
 *.egg-info/
 .env
+
+# Agent scratch files written next to candidates (1 GB slipped into a commit
+# on 2026-09-11 and blocked every push until removed from history).
+.tmp_*
+*.pkl
