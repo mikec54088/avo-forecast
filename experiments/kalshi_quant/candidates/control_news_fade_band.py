@@ -36,12 +36,14 @@ copied rather than fitted does not undo having chosen which gate to copy.
 Backdating created_at would be the bypass the invariant says never exists.
 
 THE SAMPLE, forward. The argument survives in a weaker but sufficient form:
-this gate passes a median of 2,568 distinct markets per DAY (measured over the
-research log's 14 days), against 2-3 actionable decisions a day for the
-research arm. PNL_GATE_MIN_FILLS is 200. So the control reaches a verdict in
-days where its subject needs months -- roughly 3 days allowing for the ~2-day
-resolution backfill lag, rather than the March answer the research arm is on
-course for. That is the whole argument for the module, and it does not need
+this gate yields roughly 32 fills per DAY in replay, against 2-3 actionable
+decisions a day for the research arm. PNL_GATE_MIN_FILLS is 200. So the
+control reaches a verdict in about a week where its subject needs months --
+~6 days of fills plus the ~2-day resolution backfill lag, rather than the
+March answer the research arm is on course for. (An earlier version of this
+docstring said 2,568 markets/day and ~3 days. That figure came from the
+research log, which re-asks the same market every hour; replay takes one
+entry per resolved market, so it overstated the rate ~80x.) That is the whole argument for the module, and it does not need
 the history.
 
 HOW TO READ THE RESULT. All three outcomes are informative, which is why it is
