@@ -84,8 +84,31 @@ Leakage caveat: post-game pages can survive the date filter. Tolerable here
 because the question is "did it find the pre-game news", not "did it predict
 the result", but any page describing the outcome is excluded and counted.
 
-Needs: one search provider for a one-off run (open decision 1, but a pilot
-does not commit to it for production) and `qwen3.5:9b` pulled locally.
+Needs: `qwen3.5:9b` pulled locally. Search provider decided for the pilot
+(2026-09-24): **Google News RSS**, free, no key, `after:`/`before:` operators.
+Tested on the Celta Vigo row: a Spanish query ("bajas") returned the exact El
+Desmarque report Sonnet cited; the English query ("injury") did not. Findings
+that shape P1:
+
+- Query templates need local-language terms (bajas, lesión, 欠場...), not
+  English only.
+- `before:` is day-granular and leaky (before:09-13 returned 09-13 items).
+  Re-filter every item's pubDate against the row's exact `forecast_at`.
+- Article links are Google-encoded; they decode via the documented
+  batchexecute call. Some publishers 403 a plain scripted fetch. Do not spoof
+  a browser to get past a block: record the fetch as `FETCH_BLOCKED`, never
+  as no evidence.
+- The RSS `<description>` is only the headline and publisher again -- there
+  is no separate snippet.
+
+**Headlines vs full text (asked for by the human).** For each market the local
+model judges twice on the same retrieval: (a) headlines + publisher + date
+only, (b) the same plus the full article text of every item that fetched.
+Report on the subset where at least one article fetched: how often (b)'s
+verdict differs from (a)'s, which one agrees with Sonnet and the
+adjudication, and the fetch success rate. If full text rarely changes a
+verdict, production skips fetching -- cheaper, faster, and no dependence on
+publishers allowing scripted access.
 
 Gate: if P1 retrieval recall on positives is poor, fix retrieval before any
 R1-R4 work; if interpretation disagrees often, the 9B target is wrong before
