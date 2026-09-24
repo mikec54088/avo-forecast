@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
+<!-- INTENTIONALLY PAUSED 2026-09-22. Historical Sonnet runner; do not reload.
+     Replacement plan: docs/PLAN-2026-09-22-RESEARCH-REVAMP.md -->
 <dict>
     <key>Label</key>
     <string>com.avoforecast.kalshi-research-run</string>

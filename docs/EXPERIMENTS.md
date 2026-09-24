@@ -7,7 +7,7 @@ transfers unchanged; every new experiment is evidence for or against it.
 | slug | status | contract | evaluation cost |
 |---|---|---|---|
 | `kalshi_quant` | active | `forecast(market, context) -> float`, pure function | microseconds |
-| `kalshi_research` | planned | candidate is an agent that may search and read | dozens of model calls each |
+| `kalshi_research` | paused | deterministic retrieval + local interpretation (planned revamp) | one local inference; bounded cloud escalation |
 
 ## Why research is a separate experiment, not a flag
 
@@ -25,8 +25,12 @@ thing you actually want: a controlled comparison. Same fitness, same markets,
 same holdout rule, one variable changed. "Does research time buy calibration?"
 becomes a measurable question instead of a design argument.
 
-**kalshi_research is blocked** on kalshi_quant completing generation 1. There is
-no point measuring the expensive arm before the cheap baseline exists.
+`kalshi_research` opened on 2026-09-09 after `kalshi_quant` completed its first
+generations. It is intentionally paused as of 2026-09-22: the autonomous
+per-market web agent consumed too much shared model quota and acted too rarely.
+The replacement separates deterministic search/fetch, an append-only evidence
+bundle, and one local structured inference. See
+`docs/PLAN-2026-09-22-RESEARCH-REVAMP.md`.
 
 ## Adding an experiment
 

@@ -26,7 +26,8 @@ never does the work.
     cp com.avoforecast.kalshi-*.plist ~/Library/LaunchAgents/
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.avoforecast.kalshi-snapshot.plist
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.avoforecast.kalshi-settle.plist
-    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.avoforecast.kalshi-research-run.plist
+    # kalshi-research is INTENTIONALLY PAUSED as of 2026-09-22. Do not bootstrap
+    # its old Sonnet runner; see docs/PLAN-2026-09-22-RESEARCH-REVAMP.md.
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.avoforecast.kalshi-evolve.plist
 
 ## Verify
@@ -69,6 +70,47 @@ A skipped run still costs ~25 min of local CPU, because the pool cannot be
 compared without recomputing the scores. It costs no API quota, which is the
 resource that actually runs out.
 
+## The entries table is on the critical path
+
+Capture writes snapshots and resolutions; **nothing scores until
+`avo entries build` folds them into the entries table**, and until 2026-09-22
+that was a manual command with no schedule behind it.
+
+It had last run on 2026-09-20T01:49Z. Three days later the cost was:
+
+- every candidate written after that timestamp scored **zero** observations and
+  always would -- INVARIANT #1 admits only ground truth resolving after
+  `created_at`, and none had been ingested. `unclimbed_tight`, `unclimbed_far`
+  and `control_news_fade_band` were all in that state;
+- `gen006`, `gen007` and `gen008` each read exactly **157,108** observations
+  with identical fill counts, so three "no candidate is new and no verdict has
+  moved" skips were arithmetic, not evidence about the market. The rebuild
+  added 24,870 entries in one pass.
+
+Two things now stop it recurring. `kalshi-entries` runs it at 02:00 daily, and
+`scoring_inputs()` REFUSES a table more than a day behind the newest
+resolutions partition (`experiment.MAX_ENTRIES_STALENESS_DAYS`) rather than
+returning a confident ranking of frozen numbers. One day of tolerance because
+the newest partition is still being written during the day; two means a
+rebuild was missed.
+
+02:00 is 95 minutes ahead of evolve at 03:35 -- deliberately, because a build
+still running at 03:35 would now take the nightly generation down with it.
+
+Verify it the way everything here is verified -- that data lands, not that a
+job is loaded:
+
+    uv run python -m avo.cli entries status
+    ls data/kalshi_quant/entries/entries/ | tail -3    # should show today
+
+## The research agent is paused
+
+`com.avoforecast.kalshi-research-run` was booted out on 2026-09-22 while idle.
+Do not reload the old plist. The replacement must pass the shadow and canary
+gates in `docs/PLAN-2026-09-22-RESEARCH-REVAMP.md`, use a new candidate/backend
+identity, and receive explicit human approval before scheduled research resumes.
+Capture and settlement remain active during this pause.
+
 ## Reload after editing
 
     launchctl bootout gui/$(id -u)/com.avoforecast.kalshi-snapshot
@@ -88,6 +130,7 @@ snapshots/day instead of 96.
 | `kalshi-snapshot-near` | `:00 :15 :30 :45` | 9 pages, ~3s |
 | `kalshi-snapshot` | `:07` hourly | ~2,100 pages, ~940s |
 | `kalshi-settle` | `:52` hourly | ~90 requests, ~40s |
+| `kalshi-entries` | `02:00` daily | appends the day's resolutions, ~2 min |
 
 **The near pass carries the scoring load.** It sweeps only markets closing
 within 24h (`--max-close-hours 24`). Every market passes through that window

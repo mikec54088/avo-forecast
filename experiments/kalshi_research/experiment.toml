@@ -1,7 +1,7 @@
 [experiment]
 name = "kalshi_research"
 entrypoint = "experiments.kalshi_research.experiment"
-status = "active"           # G5 authorized by the human 2026-09-09; docs/PLAN-2026-09-09.md
+status = "paused"           # Intentional 2026-09-22; docs/PLAN-2026-09-22-RESEARCH-REVAMP.md
 description = """
 Same domain and same fitness function as kalshi-quant, but a candidate is an
 AGENT, not a function: it may search news, read sources, and reason per market

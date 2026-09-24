@@ -187,9 +187,10 @@ Read this before proposing anything; most obvious ideas are already dead.
   `k = max(1, n // 4)` gives ONE parent and both slots breed from it, which is
   the exploit-only monoculture the explore slot now breaks.
 
-### The research track, measured 2026-09-20
+### The research track, measured 2026-09-20; paused 2026-09-22
 
-Running clean and not yet evaluable. launchd at :50 hourly, exit 0, 12 days of
+The measurements below are the final pre-pause assessment. At that time it was
+running clean and not yet evaluable: launchd at :50 hourly, exit 0, 12 days of
 partitions, **45,214 forecasts, zero errors** (`error` and `research_error` are
 empty strings on every row). Three candidates: `research_market` (the
 no-research control, 22,931), `roster_news_favourite` (21,253),
@@ -223,10 +224,13 @@ The funnel is the whole story:
   each hit, so it reads positive while being wrong 8 times in 13. This is
   precisely the `baseline_sharpened` trap Phase 2 built a control for.
 
-**CLAUDE.md's G5 line below is STALE** -- it still says `status = "planned"`
-while the track has run for eleven days with 45k forecasts on disk. Left alone
-deliberately: G5 is a stop-and-ask gate, the authorisation lives in
-`docs/PLAN-2026-09-09.md`, and rewriting a gate record is the human's call.
+**CURRENT STATE: INTENTIONALLY PAUSED.** The human paused `kalshi_research` on
+2026-09-22 at 08:37 PDT. The old Sonnet LaunchAgent was booted out while idle;
+capture, settlement, paper trading, and `kalshi_quant` evolution continue. Do
+not reload the old research plist. The replacement separates deterministic
+Python search/fetch, an append-only evidence bundle, one local structured
+inference, and narrowly gated Sonnet escalation. The plan and resume gates are
+in `docs/PLAN-2026-09-22-RESEARCH-REVAMP.md`.
 
 ### Potential direction: invert the scoring loop (not built)
 
@@ -312,20 +316,34 @@ Done after it passed the P&L gate on both halves. Full detail in its docstring.
 
 ### Standing decisions, 2026-09-17
 
-- **DO NOT TRADE REAL MONEY YET.** `unclimbed_favourite` is the first candidate
-  to pass the P&L gate on BOTH halves (+0.0769 selection / +0.0700
-  confirmation) and to survive the series, weekend, staleness and
-  matched-control checks -- the control, same band and spread without its path
-  gate, returns -0.0024 over 9,272 fills. But the confirmation half is 204
-  fills with a lower bound of +0.0055, it is 1 of 42 tested where ~2 false
-  positives are expected, and +7.5c is far outside the 1-3 point range every
-  other measured bias sits in. Waiting costs ~$326/day of paper profit; being
-  wrong costs real money. Wait for the confirmation fills to roughly double.
+- **DO NOT TRADE REAL MONEY YET.** `unclimbed_favourite` was the first
+  candidate to pass the P&L gate on BOTH halves and to survive the series,
+  weekend, staleness and matched-control checks -- the control, same band and
+  spread without its path gate, returns -0.0024 over 9,272 fills. Numbers
+  refreshed 2026-09-24 against the rebuilt 184,610-entry table (the 09-17
+  figures, +0.0769 / +0.0700 on 204 confirmation fills, were computed on a
+  table that had silently stopped growing -- see the entries-staleness note):
+
+      selection     983 fills / 172 series   +0.0438  [+0.0098, +0.0778]
+      confirmation  339 fills /  68 series   +0.0598  [+0.0067, +0.1128]
+
+  The condition stands and is NOT yet met. Confirmation has gone 204 -> 339
+  fills, up 66%, not the roughly-doubled ~400 this decision asks for, and the
+  lower bound is +0.0067 -- still a hair above zero. It is now 2 of 45 tested
+  rather than 1 of 42, where ~2 false positives are expected, and the edge is
+  still far outside the 1-3 point range every other measured bias sits in.
+  Being wrong costs real money. Wait for the confirmation fills to reach ~400.
+
+  The ~$326/day of forgone paper profit quoted here on 2026-09-17 is STALE and
+  deliberately not restated: paper trading changed population on 2026-09-24
+  (commit `b6d05cd`) and its cumulative figure is mid-transition. Re-measure it
+  before using it to argue either way.
 - ~~**STOP GENERATING CANDIDATES for now.**~~ **REVERSED 2026-09-20.** The
   multiple-comparison worry was real but it ignored pipeline latency: a new
   candidate cannot be judged for ~2 weeks, so three idle days bought nothing
   and cost three days of forward evidence. The both-halves P&L gate is a strong
-  enough screen (1 of 42 passes) to carry the multiplicity explicitly instead
+  enough screen (2 of 45 pass as of 2026-09-24) to carry the multiplicity
+  explicitly instead
   of abstaining. Generate continuously at `-n 2`.
 - **Paper trading is live** (`paper_runner.py`, launchd at :02/:17/:32/:47) and
   is the only thing that closes the gap replay cannot: were you there at the
@@ -342,10 +360,11 @@ Done after it passed the P&L gate on both halves. Full detail in its docstring.
   proven profitable: require proof to reject, not proof to survive. The sort
   was amended 2026-09-20 to (gate verdict, P&L lower bound, skill, n) -- see
   the tiebreak note above.
-- **G5** — `kalshi_research`, still `status = "planned"`. Note research
-  candidates CANNOT be backtested: replaying a historical market while searching
-  today's web returns the answer. They can only be evaluated forward, which is
-  why the cost model differs and why starting their holdout clock early matters.
+- ~~**G5** — open `kalshi_research`.~~ **AUTHORIZED 2026-09-09; PAUSED BY THE
+  HUMAN 2026-09-22.** Research candidates CANNOT be backtested: replaying a
+  historical market while searching today's web returns the answer. The pause
+  preserves all forward history. Resume only through the shadow/canary gates in
+  `docs/PLAN-2026-09-22-RESEARCH-REVAMP.md` and with explicit human approval.
 
 ---
 

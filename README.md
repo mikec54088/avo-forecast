@@ -34,7 +34,7 @@ src/avo/
   backends/     claude / codex / grok subprocess wrappers
 experiments/
   kalshi_quant/     active   — pure-function forecasters
-  kalshi_research/  planned  — research-enabled agents, same fitness
+  kalshi_research/  paused   — redesigning retrieval + local inference
 ```
 
 The core/experiment split is the architectural claim under test: the core should
