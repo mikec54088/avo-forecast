@@ -19,6 +19,78 @@ research arm was built and what it learned.
 - Do not reload the research LaunchAgent until the resume gate below is met and
   the human explicitly authorizes resumption.
 
+## Amendments 2026-09-24 (review; approved by the human)
+
+The architecture below is sound and stands. The review found that it fixes
+COST and AUDITABILITY, while the thing that actually stalled the track is
+RATE: 512 research calls in 11 days yielded ~20 opinions and 13 scoreable
+decisions, ~5 months to `PNL_GATE_MIN_FILLS = 200`. A perfect local pipeline
+driving the same fixed -0.04 one-direction fade inherits that rate. Five
+changes, in order:
+
+**A1. Read the no-research control first.** `control_news_fade_band` makes the
+same fade with no research, ~32 fills/day, verdict in about a week from
+2026-09-24. If the fade alone loses, research must add real edge to be worth
+building; if it wins, research may not be needed at all. Its verdict sets how
+much to invest below.
+
+**A2. R0.5 -- redesign for rate before building retrieval.** The "do not
+optimize the fade" non-goal is lifted to this extent: before R1, write down a
+candidate design that could plausibly produce >= 10 scoreable decisions/day
+(both directions, magnitude from evidence strength, a wider qualifying set),
+because what it needs determines which markets and queries retrieval must
+serve. Design on paper only; any new candidate still gets a fresh created_at.
+
+**A3. Pilot before the build: the answer-key replay (P0/P1 below).** The old
+arm left 703 stored Sonnet research outputs (`research_text` in
+`data/kalshi_research/forecasts/`), 41 of them positive verdicts on 41 distinct
+events, 2026-09-10..22. That is a free labelled set. Validate the local path
+against it in days, before building R1-R4 in full.
+
+**A4. Measure retrieval, not just interpretation.** R3 as written feeds both
+models the SAME bundle, so it cannot see news that fixed query templates never
+retrieve -- both models would agree on NONE. Add retrieval recall: for the
+positives Sonnet found with open search, does the deterministic retrieval
+surface the same report?
+
+**A5. Stop R3 on positives, not markets.** At ~4-8% positives, 200 markets
+gives ~8-16 positives, too few to measure 90% recall. R3 ends when >= 30
+adjudicated positives exist, whatever the market count.
+
+Also noted: the host's Ollama currently has `qwen3-vl:4b` installed, not the
+`qwen3.5:9b` target.
+
+### P0 -- reading test (no search, hours)
+
+Give the local model each stored Sonnet EVIDENCE paragraph plus the market
+title and ask for the schema output. Tests side mapping, negation and date
+discipline only -- the known failure modes -- in isolation from retrieval.
+Cheap, but circular for recall: Sonnet already chose the evidence.
+
+### P1 -- answer-key replay (the real pilot, ~1-2 days)
+
+Sample: all 41 positives + 60 random NONEs from the stored log. For each, run
+the deterministic query templates with search restricted to sources published
+before that row's `forecast_at`, fetch, and ask the local model. Nothing is
+logged as a forecast and nothing is scored -- these markets resolved, so this
+measures agreement, never P&L. Report:
+
+- retrieval recall: positives where retrieval surfaced Sonnet's report;
+- verdict agreement on positives and on NONEs, with intervals;
+- every disagreement hand-adjudicated;
+- latency and parse-failure rate.
+
+Leakage caveat: post-game pages can survive the date filter. Tolerable here
+because the question is "did it find the pre-game news", not "did it predict
+the result", but any page describing the outcome is excluded and counted.
+
+Needs: one search provider for a one-off run (open decision 1, but a pilot
+does not commit to it for production) and `qwen3.5:9b` pulled locally.
+
+Gate: if P1 retrieval recall on positives is poor, fix retrieval before any
+R1-R4 work; if interpretation disagrees often, the 9B target is wrong before
+any engineering is spent on it.
+
 ## Decision
 
 Replace the current autonomous Claude web-research session with a staged,
