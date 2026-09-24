@@ -67,6 +67,35 @@ title and ask for the schema output. Tests side mapping, negation and date
 discipline only -- the known failure modes -- in isolation from retrieval.
 Cheap, but circular for recall: Sonnet already chose the evidence.
 
+STATUS: DONE 2026-09-24. `qwen3.5:9b` (Ollama tag 6488c96fa5fa), temperature
+0, 41 Sonnet positives + 60 random NONEs. Results in
+`data/kalshi_research/pilot/p0_*.parquet`.
+
+| run | agree | wrong side | missed positive | false positive | errors | median |
+|---|---|---|---|---|---|---|
+| v1: THIS_SIDE/OTHER_SIDE, no date, no think | 86.1% | 6 | 8 | 0 | 0 | 2.3s |
+| v2: HURTS_* labels + question date, no think | 79.2% | 0 | 21 | 0 | 0 | 2.3s |
+| v2 + think, 16k context | **97.0%** | 0 | 2 | 0 | 1 | 25.9s |
+
+- v1's six wrong-side answers all had CORRECT reasoning and a flipped label:
+  it read OTHER_SIDE as "good for the other side". Name the enum after the
+  side the news is BAD for.
+- Without thinking, v2 dismissed opponent injuries ("the question is about
+  Arizona") and filed same-day scratches as routine lineups. Thinking fixes
+  both. Non-thinking is not viable.
+- The 2 remaining "misses" are rain/typhoon postponements, where the local
+  model's NONE is arguably the better answer -- a postponement hurts neither
+  side. Excluding them, 38/39 positives and 60/60 NONEs.
+- The 1 error is the Fukuoka Hawks / Seibu row: the model never finished
+  thinking (2 x 300s). It also did not know the SoftBank Hawks ARE the
+  Fukuoka Hawks. Unbounded thinking must be capped (`num_predict`), and a
+  cap hit is a research failure, never NONE.
+- A 4k context truncated the reasoning on the four hardest rows; 16k fixed
+  three of them. Use >= 16k.
+- Latency: median 26s, p90 ~60s -- inside the 30s-median bar, barely.
+- Caveats: circular (Sonnet distilled the evidence), 41 positives, and
+  adjudicated by the same session that designed the test.
+
 ### P1 -- answer-key replay (the real pilot, ~1-2 days)
 
 Sample: all 41 positives + 60 random NONEs from the stored log. For each, run
