@@ -143,6 +143,65 @@ Gate: if P1 retrieval recall on positives is poor, fix retrieval before any
 R1-R4 work; if interpretation disagrees often, the 9B target is wrong before
 any engineering is spent on it.
 
+STATUS: DONE 2026-09-25. **Gate verdict: retrieval recall is poor. Fix
+retrieval before R1-R4.** Scripts: `scripts/research_pilot/`. Data:
+`data/kalshi_research/pilot/p1_*`. ~2.7 min/market, 101 markets.
+
+Design changes forced during the run (keep them):
+- **Judge each side independently.** A single-label schema made the model
+  dither to the token cap whenever BOTH teams had news (Celta Vigo: four
+  injured; Malaga: two out ill). `BOTH` is a real, common answer.
+- **Screen, then judge.** A no-think pass picks availability items out of the
+  12 headlines; the thinking pass sees only those. Without it most judgments
+  hit the cap.
+- Thinking cap 12k tokens; a cap hit is `THINK_CAP`, a research failure.
+
+Where Sonnet's 41 positives went (hand-triaged by the key player named):
+
+| outcome | n | |
+|---|---|---|
+| found (either mode) | 16 | 39% |
+| retrieved, then missed by screen/judge/cap | 7 | 17% |
+| never retrieved | 18 | 44% |
+
+Retrieval recall ~56% (23/41); model recall given retrieval ~70% (16/23),
+well below P0's 97% on Sonnet-distilled evidence -- raw headlines are
+harder than a clean paragraph. The retrieval misses cluster:
+- **Specialist sources Google News does not index**: RotoWire injury notes
+  (4 of the NCAAF misses), HLTV / Liquipedia transfer logs (every CS2 miss),
+  team official sites, Sheep Esports, Korean/Japanese sports dailies.
+- **Name localisation**: NPB returned 0-3 items; Japanese press writes
+  ソフトバンク, not "Fukuoka Hawks". KBO likewise.
+- One Sonnet positive (Alabama) cites an in-progress game's live blog --
+  the OLD arm researched after kickoff. Not leakage (information was
+  available then), but the new arm must decide deliberately whether in-game
+  research is in scope.
+
+On Sonnet's 60 NONEs the pipeline flagged 10 (headlines) / 11 (full). Roughly
+half are real news Sonnet missed (Liquid's flashie stand-in; Rays' Mullins
+out; Blue Jays' Cease MRI) and half are false alarms (a different team's
+tragedy, a match result, positive news read as negative). MLB "out of
+lineup" rest-day notes are the main source of weak flags.
+
+**Headlines vs full text (the human's question): skip full text.**
+
+| | found on positives | side correct | flags on NONEs | failures | median time |
+|---|---|---|---|---|---|
+| headlines only | 11 | 11 | 10 | 5 | ~2s screen-only / ~2 min when judged |
+| + full text | 13 | 11 | 11 | 13 | 85s |
+
+Full text changed 28 of 94 verdicts, but not toward the answer: two more
+positives found, zero more with the right side, one more false flag, and 2.6x
+the failures (cap hits and bad citations) at far higher latency. 120 of 880
+fetches were blocked, 39 more failed or empty. Headlines carry the signal
+("X out of lineup", "four absences for Celta"); the article adds tokens the
+9B model gets lost in.
+
+Next, in order: (1) add specialist sources as deterministic feeds, not web
+search -- RotoWire/CBS player-news RSS, HLTV/Liquipedia for esports, league
+availability reports; (2) localised team names per league; (3) re-run P1
+headlines-only; (4) only then speed (target: median < 30s).
+
 ## Decision
 
 Replace the current autonomous Claude web-research session with a staged,
