@@ -336,7 +336,7 @@ Done after it passed the P&L gate on both halves. Full detail in its docstring.
 
   The ~$326/day of forgone paper profit quoted here on 2026-09-17 is STALE and
   deliberately not restated: paper trading changed population on 2026-09-24
-  (commit `b6d05cd`) and its cumulative figure is mid-transition. Re-measure it
+  (commit `4c06150`) and its cumulative figure is mid-transition. Re-measure it
   before using it to argue either way.
 - ~~**STOP GENERATING CANDIDATES for now.**~~ **REVERSED 2026-09-20.** The
   multiple-comparison worry was real but it ignored pipeline latency: a new
