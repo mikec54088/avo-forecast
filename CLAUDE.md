@@ -224,6 +224,11 @@ The funnel is the whole story:
   each hit, so it reads positive while being wrong 8 times in 13. This is
   precisely the `baseline_sharpened` trap Phase 2 built a control for.
 
+**NO SONNET IN THE RESEARCH TRACK (human decision, 2026-09-25).** The local
+model (`qwen3.5:9b` via Ollama) is the research engine; Sonnet escalation is
+dropped. Pilot results and the running local-only shadow test are in
+`docs/PLAN-2026-09-22-RESEARCH-REVAMP.md` (P0/P1/P2).
+
 **CURRENT STATE: INTENTIONALLY PAUSED.** The human paused `kalshi_research` on
 2026-09-22 at 08:37 PDT. The old Sonnet LaunchAgent was booted out while idle;
 capture, settlement, paper trading, and `kalshi_quant` evolution continue. Do

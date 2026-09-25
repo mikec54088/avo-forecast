@@ -1,4 +1,12 @@
-"""P2 held-out shadow test: Sonnet vs the local v3 pipeline on NEW games.
+"""P2 shadow test of the local v3 research pipeline on NEW games. LOCAL ONLY.
+
+2026-09-25: the human stopped all Sonnet use ("it is eating up tokens") and
+made the local model the research engine. The first 12 markets were run
+against Sonnet (all agreed, all NONE); from then on Sonnet is not called at
+all and its fields read NOT_RUN. Evaluation is by hand-adjudicating the local
+positives plus a sample of NONEs. The original design follows.
+
+Originally: Sonnet vs the local v3 pipeline on NEW games.
 
 Authorised by the human 2026-09-25. Each pass takes the newest full-pass
 snapshot, selects game markets with roster_news_favourite's own filter
@@ -29,7 +37,6 @@ import random
 import re
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -41,17 +48,12 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).parent))
 
 import p1_replay as local
-from p0_reading import classify
 
-from avo.core.generate import is_quota_exhausted
 from experiments.kalshi_quant.types import MarketSnapshot
 from experiments.kalshi_research.candidates import roster_news_favourite as rnf
-from experiments.kalshi_research.researcher import ClaudeResearcher
-from experiments.kalshi_research.types import parse_verdict
 
-SONNET_MODEL = "claude-sonnet-5"
 PER_PASS = 6
-TARGET = 50
+TARGET = 150   # local-only costs no Claude quota; more positives to adjudicate
 MIN_LEAD = timedelta(minutes=20)
 OUT = ROOT / "data/kalshi_research/pilot"
 ESPORTS = set(local.LIQUIPEDIA_WIKI)
@@ -138,45 +140,27 @@ def main() -> None:
     picks = candidates(snap, now, skip)[: TARGET - len(skip)]
     print(f"[p2] {now:%Y-%m-%d %H:%M}Z snapshot {f.parent.name}/{f.name}: "
           f"{len(picks)} markets ({len(skip)} done of {TARGET})", flush=True)
-    sonnet = ClaudeResearcher(model=SONNET_MODEL)
     for r in picks:
         this_side = local.side_name(r.title)
         opp = opponent(snap, r)
-        query = (f"Has anything dated today changed the expected outcome of this event: "
-                 f"{r.title} ({r.ticker})? Roster, injury, scratch, "
-                 f"substitution, postponement or venue change.")
         x = type("X", (), {"ticker": r.ticker, "title": r.title, "this_side": this_side,
                            "series_ticker": r.series_ticker,
                            "forecast_at": pd.Timestamp(now)})()
-
-        def run_local(x=x, opp=opp):
-            t0 = time.time()
-            b = local.retrieve(x, opp)
-            if b["state"] == "EVIDENCE_AVAILABLE":
-                v = local.judge(x, b, full=False)
-            else:
-                v = {"verdict": b["state"], "reason": "", "sec": 0.0}
-            v["wall"] = time.time() - t0
-            return b, v
-
-        with ThreadPoolExecutor(2) as ex:
-            fs, fl = ex.submit(sonnet.research, query), ex.submit(run_local)
-            sr, (bundle, lv) = fs.result(), fl.result()
-        if sr.error and is_quota_exhausted(sr.error + " " + sr.text):
-            print(f"[p2] QUOTA: {sr.error[:120]} -- aborting pass, nothing recorded "
-                  f"for {r.ticker}", flush=True)
-            return
-        sv, _ = parse_verdict(sr.text) if not sr.error else ("ERROR", "")
+        t0 = time.time()
+        bundle = local.retrieve(x, opp)
+        if bundle["state"] == "EVIDENCE_AVAILABLE":
+            lv = local.judge(x, bundle, full=False)
+        else:
+            lv = {"verdict": bundle["state"], "reason": "", "sec": 0.0}
+        wall = time.time() - t0
         rec = {"at": now.isoformat(), "ticker": r.ticker, "event_ticker": r.event_ticker,
                "series": r.series_ticker, "title": r.title, "this_side": this_side,
                "opponent": opp, "mid": (r.yes_bid + r.yes_ask) / 2,
-               "sonnet_researcher": sonnet.name, "sonnet_text": sr.text,
-               "sonnet_error": sr.error, "sonnet_sec": sr.elapsed_s,
-               "sonnet_verdict": sv,
-               "sonnet": "ERROR" if sr.error else classify(sv, this_side),
+               "sonnet": "NOT_RUN",  # Sonnet stopped by the human 2026-09-25
+               "local_model": local.MODEL,
                "local": lv["verdict"], "local_reason": lv.get("reason", ""),
                "local_cited": lv.get("cited", ""), "local_screened": lv.get("screened", ""),
-               "local_sec": lv.get("sec", 0.0), "local_wall": lv["wall"],
+               "local_sec": lv.get("sec", 0.0), "local_wall": wall,
                "local_state": bundle["state"], "local_items": len(bundle["items"]),
                "local_errors": bundle["errors"]}
         bundle["at"] = now.isoformat()
@@ -184,10 +168,8 @@ def main() -> None:
             fh.write(json.dumps(bundle, ensure_ascii=False) + "\n")
         with (OUT / "p2_results.jsonl").open("a") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        print(f"[p2] {r.ticker[:36]:36} sonnet={rec['sonnet']:10} ({sr.elapsed_s:4.0f}s) "
-              f"local={rec['local']:10} ({lv['wall']:4.0f}s) items={len(bundle['items'])}",
-              flush=True)
-
+        print(f"[p2] {r.ticker[:36]:36} local={rec['local']:10} ({wall:4.0f}s) "
+              f"items={len(bundle['items'])}", flush=True)
 
 if __name__ == "__main__":
     main()

@@ -483,3 +483,15 @@ time, zero errors, all NONE. Expect ~3-5 Sonnet positives in 50 at the ~6%
 rate seen before -- enough to catch plumbing and false-alarm problems, NOT
 enough to measure recall (A5). If positives are that scarce, extend the run
 rather than read recall off a handful.
+
+**2026-09-25, human decision: stop all Sonnet in the research track; the local
+model is the research engine.** Reason given: Sonnet was eating the account's
+tokens. Consequences:
+- P2 became LOCAL ONLY after its first 12 markets (those 12 compared against
+  Sonnet: all agreed, all NONE). No Claude call remains in
+  `scripts/research_pilot/`. Target raised 50 -> 150 since local runs cost no
+  quota. Evaluation is now by hand-adjudicating the local positives and a
+  sample of NONEs; there is no Sonnet answer key for new games.
+- Section 4 (optional Sonnet escalation) is DROPPED. Hard cases fail closed
+  (defer) instead of escalating.
+- The old Sonnet research plist stays unloaded permanently.

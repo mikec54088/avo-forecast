@@ -2,14 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <!-- P2 held-out SHADOW test (docs/PLAN-2026-09-22-RESEARCH-REVAMP.md),
-     authorised by the human 2026-09-25. NOT the research arm: it records a
-     Sonnet-vs-local comparison and never logs a forecast. The script stops
-     itself at 50 markets; boot this out afterwards:
+     authorised by the human 2026-09-25. NOT the research arm: it never logs
+     a forecast. LOCAL MODEL ONLY since 2026-09-25 -- the human stopped all
+     Sonnet use; this job makes no Claude calls. Stops itself at 150 markets;
+     boot this out afterwards:
          launchctl bootout gui/$(id -u)/com.avoforecast.kalshi-research-shadow
 
      Five passes a day at :45, after the full snapshot lands (~:31), 6 markets
-     each -> ~2 days to 50. No 03:45 pass: evolve runs at 03:35 and both draw
-     on the same account window. -->
+     each -> ~5 days to 150. -->
 <dict>
     <key>Label</key>
     <string>com.avoforecast.kalshi-research-shadow</string>
