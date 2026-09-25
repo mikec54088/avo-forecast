@@ -16,6 +16,11 @@ site-restricted query; esports news sites; Japanese/Korean club names; items
 merged round-robin across queries so one noisy query cannot crowd out the
 specialist ones. CAUTION: v2's queries were designed after reading v1's
 misses on these same 41 positives, so its recall here is optimistic.
+
+v3 (2026-09-25): news must be <= 24h old (human's decision); every item is
+tagged with the side whose query found it (RotoWire headlines name the player,
+never the team); Liquipedia transfer logs for esports; reserve/academy sides
+are different teams. Used by p2_shadow.py for the held-out forward test.
 """
 from __future__ import annotations
 
@@ -42,11 +47,11 @@ MODEL = "qwen3.5:9b"
 OUT = Path("data/kalshi_research/pilot")
 UA = {"User-Agent": "avo-forecast-research-pilot/0.1 (non-commercial; one-off test)"}
 GAP_S = 2.0            # politeness between Google requests
-VERSION = "v2"
+VERSION = "v3"
 MAX_ITEMS = 20         # headlines shown to the screen pass
 MAX_FETCH = 0          # v2: headlines only (v1 fetched all 12 to compare)
 TEXT_CAP = 1500        # chars per article; 12 x 1500 + thinking fits a 24k ctx
-LOOKBACK = timedelta(days=3)
+LOOKBACK = timedelta(hours=24)   # v3: decided by the human 2026-09-25
 
 # (hl, gl, ceid, keywords) by language
 LANG = {
@@ -97,8 +102,89 @@ LOCAL_KO = {
 }
 ROTOWIRE = {"KXMLBGAME", "KXNCAAFGAME", "KXNFLGAME", "KXEPLGAME", "KXEFLCHAMPIONSHIPGAME",
             "KXMLSGAME", "KXUSLGAME", "KXLALIGAGAME", "KXSERIEAGAME"}
+LIQUIPEDIA_WIKI = {"KXCS2GAME": "counterstrike", "KXLOLGAME": "leagueoflegends",
+                   "KXDOTA2GAME": "dota2", "KXVALORANTGAME": "valorant", "KXR6GAME": "rainbowsix"}
+LIQUIPEDIA_UA = {"User-Agent": "avo-forecast-research-pilot/0.1 (non-commercial; "
+                 "contact mikec54088 on GitHub)", "Accept-Encoding": "gzip"}
+_LP_CACHE: dict[tuple[str, str], list[dict]] = {}
+_LP_LAST = [0.0]
 ESPORTS_SITES = ("(site:hltv.org OR site:dust2.us OR site:dexerto.com OR site:sheepesports.com "
                  "OR site:esports.gg OR site:liquipedia.net OR site:gosugamers.net)")
+
+
+def _lp_page(wiki: str, t: pd.Timestamp) -> str:
+    if wiki == "dota2":  # Dota files transfers by quarter
+        q = (t.month - 1) // 3 + 1
+        return f"Transfers/{t.year}/{q}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(q, 'th') } Quarter"
+    return f"Player Transfers/{t.year}/{t.strftime('%B')}"
+
+
+def liquipedia_rows(wiki: str, page: str) -> list[dict]:
+    """Transfer rows from one Liquipedia page. Liquipedia's API terms allow one
+    `parse` request per 30s and require an identifying UA and gzip; cached per
+    run so each page is fetched once."""
+    import gzip
+    key = (wiki, page)
+    if key in _LP_CACHE:
+        return _LP_CACHE[key]
+    wait = 31 - (time.time() - _LP_LAST[0])
+    if wait > 0:
+        time.sleep(wait)
+    url = (f"https://liquipedia.net/{wiki}/api.php?" + urllib.parse.urlencode(
+        {"action": "parse", "page": page, "format": "json", "prop": "wikitext"}))
+    raw = urllib.request.urlopen(urllib.request.Request(url, headers=LIQUIPEDIA_UA),
+                                 timeout=30).read()
+    _LP_LAST[0] = time.time()
+    try:
+        raw = gzip.decompress(raw)
+    except OSError:
+        pass
+    d = json.loads(raw)
+    if "error" in d:
+        raise RuntimeError(f"liquipedia {wiki}/{page}: {d['error'].get('code')}")
+    text = re.sub(r"<!--.*?-->", "", d["parse"]["wikitext"]["*"], flags=re.DOTALL)
+    rows = []
+    for m in re.finditer(r"\{\{Transfer Row(.*?)\}\}\}\}|\{\{Transfer Row([^{}]*)\}\}", text):
+        body = m.group(1) or m.group(2) or ""
+        f = {k.strip(): v.strip() for k, v in re.findall(r"\|\s*([a-z0-9]+)\s*=([^|{}]*)", body)}
+        if f.get("date") and f.get("name"):
+            rows.append(f)
+    _LP_CACHE[key] = rows
+    return rows
+
+
+_RESERVE = re.compile(r"\b(academy|nxt|next gen|youth|junior|female|fe|ii|b|u\d\d)\b", re.IGNORECASE)
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", s.lower().replace("esports", "").replace("gaming", ""))
+
+
+def liquipedia_items(series: str, sides: list[tuple[str, str]], t: pd.Timestamp) -> list[dict]:
+    """Transfers dated on the question day or the day before, touching either side."""
+    wiki = LIQUIPEDIA_WIKI.get(series)
+    if not wiki:
+        return []
+    days = {t.date().isoformat(), (t - timedelta(days=1)).date().isoformat()}
+    out = []
+    for row in liquipedia_rows(wiki, _lp_page(wiki, t)):
+        if row["date"][:10] not in days:
+            continue
+        teams = [row.get("team1", ""), row.get("team2", "")]
+        for name, label in sides:
+            n = _norm(name)
+            if n and any(tm and (_norm(tm) in n or n in _norm(tm)) and len(_norm(tm)) >= 3
+                         and not (_RESERVE.search(tm) and not _RESERVE.search(name))
+                         for tm in teams):
+                names = ", ".join(row[k] for k in sorted(row) if re.fullmatch(r"name\d*", k))
+                role = " / ".join(x for x in (row.get("role1"), row.get("role2"), row.get("pos")) if x)
+                out.append({"headline": f"Transfer: {names} from {teams[0] or '(none)'} to "
+                                        f"{teams[1] or '(none)'}{' [' + role + ']' if role else ''}",
+                            "publisher": "Liquipedia", "link": "", "side": label,
+                            "published": f"{row['date'][:10]}T00:00:00+00:00",
+                            "query": f"liquipedia:{wiki}"})
+                break
+    return out
 
 
 def side_name(title: str) -> str:
@@ -198,20 +284,20 @@ def retrieve(x, opp: str) -> dict:
     me, them = search_name(x.this_side, x.series_ticker), search_name(opp, x.series_ticker)
     kw = LANG[lang][3]
     sport = SPORT.get(x.series_ticker, "")
-    queries = [f'"{me}" ({kw})']
+    sides = [(me, x.this_side)] + ([(them, opp)] if them else [])
+    queries = [(f'"{me}" ({kw})', x.this_side)]
     if them:
-        queries += [f'"{them}" ({kw})', f'"{me}" "{them}" {sport}'.strip()]
-    sides = [n for n in (me, them) if n]
+        queries += [(f'"{them}" ({kw})', opp), (f'"{me}" "{them}" {sport}'.strip(), "both teams")]
     if x.series_ticker in ROTOWIRE:
-        queries += [f'intitle:Injury "{n}" site:rotowire.com' for n in sides]
+        queries += [(f'intitle:Injury "{n}" site:rotowire.com', lab) for n, lab in sides]
     if lang == "esports":
-        queries += [f'"{n}" {ESPORTS_SITES}' for n in sides]
+        queries += [(f'"{n}" {ESPORTS_SITES}', lab) for n, lab in sides]
     bundle = {"ticker": x.ticker, "forecast_at": t.isoformat(), "lang": lang,
-              "queries": queries, "state": "", "errors": [], "items": [],
+              "queries": [q for q, _ in queries], "state": "", "errors": [], "items": [],
               "dropped_after_forecast": 0}
     seen: set[str] = set()
     per_query: list[list[dict]] = []
-    for q in queries:
+    for q, label in queries:
         try:
             got = gnews(q, lang, after, before)
         except Exception as e:  # noqa: BLE001
@@ -226,10 +312,16 @@ def retrieve(x, opp: str) -> dict:
             if pub < t - LOOKBACK or it["headline"] in seen:
                 continue
             seen.add(it["headline"])
-            it["query"] = q
+            it["query"], it["side"] = q, label
             keep.append(it)
         keep.sort(key=lambda i: i["published"], reverse=True)
         per_query.append(keep)
+    if x.series_ticker in LIQUIPEDIA_WIKI:
+        try:
+            per_query.insert(0, liquipedia_items(
+                x.series_ticker, [(x.this_side, x.this_side)] + ([(opp, opp)] if opp else []), t))
+        except Exception as e:  # noqa: BLE001
+            bundle["errors"].append(f"LIQUIPEDIA_FAILED: {e!r}"[:200])
     # round-robin so a noisy query cannot crowd out a specialist one
     merged: list[dict] = []
     while len(merged) < MAX_ITEMS and any(per_query):
@@ -247,7 +339,7 @@ def retrieve(x, opp: str) -> dict:
                 it["fetch"] = it["fetch"] or "OK"
             except Exception as e:  # noqa: BLE001
                 it["fetch"] = f"DECODE_FAILED {type(e).__name__}"
-    if len(bundle["errors"]) == len(queries):
+    if sum(e.startswith("SEARCH_FAILED") for e in bundle["errors"]) == len(queries):
         bundle["state"] = "SEARCH_FAILED"
     elif not bundle["items"]:
         bundle["state"] = "NO_RELEVANT_RESULTS"
@@ -267,6 +359,10 @@ SYSTEM = (
     "the question time, that REDUCES the chances of the side named in the market "
     "(key player injured/out/scratched/suspended/ill, roster change, stand-in).\n"
     "- bad_for_opponent: the same test for the opponent.\n"
+    "Each item says which side's search found it; a headline naming only a "
+    "player (e.g. RotoWire) belongs to that side unless it says otherwise. A "
+    "reserve, academy, B, youth or women's team (e.g. 'Next Gen', 'Academy', "
+    "'II') is a DIFFERENT team from the senior club.\n"
     "Each is false for: no relevant item; routine preview or odds; injury to "
     "someone not in this event; old or background news; anything inferred. When in "
     "doubt, false. Cite the item ids behind each true answer."
@@ -299,7 +395,8 @@ def screen(x, b: dict, full: bool) -> tuple[list[str], float, str]:
     """Stage 1, no thinking: which items are about availability at all."""
     lines = []
     for it in b["items"]:
-        lines.append(f"[{it['id']}] {it['published'][:16]} | {it['publisher']} | {it['headline']}")
+        lines.append(f"[{it['id']}] {it['published'][:16]} | {it['publisher']} | {it['headline']}"
+                     f" (found searching for: {it.get('side', '?')})")
         if full and it["text"]:
             lines.append(f"    TEXT: {it['text']}")
     user = (f"EVENT: {x.this_side} vs {b['opponent'] or 'unknown'}\n\nITEMS:\n<<<\n"
@@ -338,7 +435,8 @@ def judge(x, b: dict, full: bool) -> dict:
 def _judge(x, b: dict, full: bool) -> dict:
     lines = []
     for it in b["items"]:
-        lines.append(f"[{it['id']}] {it['published'][:16]} | {it['publisher']} | {it['headline']}")
+        lines.append(f"[{it['id']}] {it['published'][:16]} | {it['publisher']} | {it['headline']}"
+                     f" (found searching for: {it.get('side', '?')})")
         if full and it["text"]:
             lines.append(f"    TEXT: {it['text']}")
     user = (f"MARKET: {x.title}\nSIDE NAMED IN THE MARKET: {x.this_side}\n"

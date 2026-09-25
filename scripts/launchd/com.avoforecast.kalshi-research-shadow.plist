@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- P2 held-out SHADOW test (docs/PLAN-2026-09-22-RESEARCH-REVAMP.md),
+     authorised by the human 2026-09-25. NOT the research arm: it records a
+     Sonnet-vs-local comparison and never logs a forecast. The script stops
+     itself at 50 markets; boot this out afterwards:
+         launchctl bootout gui/$(id -u)/com.avoforecast.kalshi-research-shadow
+
+     Five passes a day at :45, after the full snapshot lands (~:31), 6 markets
+     each -> ~2 days to 50. No 03:45 pass: evolve runs at 03:35 and both draw
+     on the same account window. -->
+<dict>
+    <key>Label</key>
+    <string>com.avoforecast.kalshi-research-shadow</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/hermesagent/miniconda3/bin/uv</string>
+        <string>run</string>
+        <string>--with</string>
+        <string>trafilatura</string>
+        <string>python</string>
+        <string>-u</string>
+        <string>scripts/research_pilot/p2_shadow.py</string>
+    </array>
+
+    <!-- launchd's bare PATH cannot find the claude CLI or uv (see the
+         research-run plist, measured 2026-09-10). -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/hermesagent/.local/bin:/Users/hermesagent/miniconda3/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/hermesagent/development/avo-forecast</string>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Hour</key><integer>11</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Hour</key><integer>15</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Hour</key><integer>23</integer><key>Minute</key><integer>45</integer></dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/kalshi_research/pilot/p2_run.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/kalshi_research/pilot/p2_run.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
