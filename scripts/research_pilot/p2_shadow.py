@@ -14,7 +14,7 @@ NOTHING is logged as a forecast, nothing trades, no candidate sees this. The
 output is a comparison log, adjudicated by hand afterwards.
 
 One event per market pair (the favourite side). At most PER_PASS markets per
-pass, round-robin across series with esports first so it is represented.
+pass, round-robin across series in an order shuffled per pass.
 Stops for good at TARGET markets. Aborts the pass on a quota message so it
 never burns the account's window (the lesson of generations 3, 4 and 7).
 
@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import glob
 import json
+import random
 import re
 import sys
 import time
@@ -104,7 +105,11 @@ def candidates(snap: pd.DataFrame, now: datetime, skip: set[str]) -> list[pd.Ser
     by_series: dict[str, list] = {}
     for r in sorted(by_event.values(), key=lambda r: r.ticker):
         by_series.setdefault(r.series_ticker, []).append(r)
-    order = sorted(by_series, key=lambda s: (s not in ESPORTS, s))
+    # Shuffled per pass. The first two passes used esports-first-then-alphabetical,
+    # and with 6 slots never reached MLB/NCAAF/EPL -- the leagues with the most
+    # news. Seeded by the hour so a pass is reproducible.
+    order = sorted(by_series)
+    random.Random(int(now.timestamp()) // 3600).shuffle(order)
     picked = []
     while len(picked) < PER_PASS and any(by_series.values()):
         for s in order:
