@@ -171,3 +171,12 @@ become a full sweep every 15 minutes.
 Snapshots are the only calendar-bound part of the system: top-of-book at a given
 instant is gone forever if nothing captured it. Settlements stay queryable and
 are backfillable.
+
+## Research SHADOW test (temporary, 2026-09-25)
+
+`com.avoforecast.kalshi-research-shadow` runs the P2 Sonnet-vs-local
+comparison (docs/PLAN-2026-09-22-RESEARCH-REVAMP.md). It is NOT the paused
+research arm and writes no forecasts. It stops itself at 50 markets; then:
+
+    launchctl bootout gui/$(id -u)/com.avoforecast.kalshi-research-shadow
+    tail data/kalshi_research/pilot/p2_run.log

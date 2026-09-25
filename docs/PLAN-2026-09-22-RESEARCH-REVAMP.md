@@ -460,3 +460,26 @@ back to Sonnet or reuses its clock with another backend.
    hashes and URLs.
 3. The acceptable Sonnet escalation ceiling below the 20% promotion maximum.
 4. Whether a second local model should adjudicate positives before Sonnet.
+
+### P2 -- held-out shadow test. STATUS: RUNNING since 2026-09-25
+
+Authorised by the human 2026-09-25, together with three decisions: news
+freshness **24 hours**, esports **stays in scope**, and a fair test on NEW
+games. `scripts/research_pilot/p2_shadow.py` asks Sonnet (the old arm's exact
+researcher, pinned `claude-sonnet-5`, prompt v2, same query string) and the
+local v3 pipeline the same question at the same moment, on games that have
+not yet started, chosen by `roster_news_favourite.wants_research`. It logs a
+comparison only -- no forecast, no candidate, no trade -- so it is a shadow,
+not a resumption of the research arm.
+
+Schedule: `com.avoforecast.kalshi-research-shadow`, 07:45/11:45/15:45/19:45/
+23:45 local, 6 markets per pass, stops itself at 50, skips the 03:35 evolve
+window, aborts a pass on a quota message. Output:
+`data/kalshi_research/pilot/p2_results.jsonl`. Boot it out once it reports
+the target reached.
+
+First pass (6 markets, 5 esports-heavy): both researchers answered every
+time, zero errors, all NONE. Expect ~3-5 Sonnet positives in 50 at the ~6%
+rate seen before -- enough to catch plumbing and false-alarm problems, NOT
+enough to measure recall (A5). If positives are that scarce, extend the run
+rather than read recall off a handful.
