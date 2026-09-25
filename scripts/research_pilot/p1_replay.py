@@ -7,8 +7,15 @@ Per market the local model judges TWICE on the same retrieval:
 so we can tell whether full text ever changes a verdict.
 
 Run:  uv run --with trafilatura python scripts/research_pilot/p1_replay.py [limit]
-Out:  data/kalshi_research/pilot/p1_bundles.jsonl  (every retrieval, for audit)
-      data/kalshi_research/pilot/p1_results.parquet
+Out:  data/kalshi_research/pilot/p1{VERSION}_bundles.jsonl  (every retrieval, for audit)
+      data/kalshi_research/pilot/p1{VERSION}_results.parquet
+
+v2 (2026-09-25), after v1 showed retrieval was the bottleneck: headlines only
+(full text added failures, not answers); RotoWire injury notes via a
+site-restricted query; esports news sites; Japanese/Korean club names; items
+merged round-robin across queries so one noisy query cannot crowd out the
+specialist ones. CAUTION: v2's queries were designed after reading v1's
+misses on these same 41 positives, so its recall here is optimistic.
 """
 from __future__ import annotations
 
@@ -35,8 +42,9 @@ MODEL = "qwen3.5:9b"
 OUT = Path("data/kalshi_research/pilot")
 UA = {"User-Agent": "avo-forecast-research-pilot/0.1 (non-commercial; one-off test)"}
 GAP_S = 2.0            # politeness between Google requests
-MAX_ITEMS = 12         # headlines shown to the model
-MAX_FETCH = 12         # fetch every shown item, so headline-vs-full is a fair test
+VERSION = "v2"
+MAX_ITEMS = 20         # headlines shown to the screen pass
+MAX_FETCH = 0          # v2: headlines only (v1 fetched all 12 to compare)
 TEXT_CAP = 1500        # chars per article; 12 x 1500 + thinking fits a 24k ctx
 LOOKBACK = timedelta(days=3)
 
@@ -75,13 +83,38 @@ MLB = {"Arizona": "Diamondbacks", "Atlanta": "Braves", "Baltimore": "Orioles", "
        "Toronto": "Blue Jays", "Washington": "Nationals"}
 
 
+# Japanese / Korean press name clubs by sponsor or short form, not the English
+# Kalshi title ("Fukuoka Hawks" is ソフトバンク in every Japanese headline).
+LOCAL = {
+    "Hawks": "ソフトバンク", "Marines": "ロッテ", "Lions": "西武", "Buffaloes": "オリックス",
+    "Eagles": "楽天", "Fighters": "日本ハム", "Giants": "巨人", "Tigers": "阪神",
+    "Dragons": "中日", "BayStars": "DeNA", "Carp": "広島", "Swallows": "ヤクルト",
+}
+LOCAL_KO = {
+    "LG": "LG 트윈스", "Hanwha": "한화", "Doosan": "두산", "Kia": "KIA", "KIA": "KIA",
+    "Samsung": "삼성", "Lotte": "롯데", "SSG": "SSG", "NC": "NC 다이노스", "KT": "KT 위즈",
+    "Kiwoom": "키움",
+}
+ROTOWIRE = {"KXMLBGAME", "KXNCAAFGAME", "KXNFLGAME", "KXEPLGAME", "KXEFLCHAMPIONSHIPGAME",
+            "KXMLSGAME", "KXUSLGAME", "KXLALIGAGAME", "KXSERIEAGAME"}
+ESPORTS_SITES = ("(site:hltv.org OR site:dust2.us OR site:dexerto.com OR site:sheepesports.com "
+                 "OR site:esports.gg OR site:liquipedia.net OR site:gosugamers.net)")
+
+
 def side_name(title: str) -> str:
     m = re.match(r"Will (.+?) win\b", title)
     return (m.group(1) if m else re.sub(r"\s+wins?\??$", "", title)).strip()
 
 
 def search_name(side: str, series: str) -> str:
-    return MLB.get(side, side) if series == "KXMLBGAME" else side
+    if series == "KXMLBGAME":
+        return MLB.get(side, side)
+    table = LOCAL if series == "KXNPBGAME" else LOCAL_KO if series == "KXKBOGAME" else None
+    if table and side:
+        for key, local in table.items():
+            if key in side.split():
+                return local
+    return side
 
 
 def opponents(sample: pd.DataFrame) -> dict[str, str]:
@@ -168,16 +201,23 @@ def retrieve(x, opp: str) -> dict:
     queries = [f'"{me}" ({kw})']
     if them:
         queries += [f'"{them}" ({kw})', f'"{me}" "{them}" {sport}'.strip()]
+    sides = [n for n in (me, them) if n]
+    if x.series_ticker in ROTOWIRE:
+        queries += [f'intitle:Injury "{n}" site:rotowire.com' for n in sides]
+    if lang == "esports":
+        queries += [f'"{n}" {ESPORTS_SITES}' for n in sides]
     bundle = {"ticker": x.ticker, "forecast_at": t.isoformat(), "lang": lang,
               "queries": queries, "state": "", "errors": [], "items": [],
               "dropped_after_forecast": 0}
-    seen = set()
+    seen: set[str] = set()
+    per_query: list[list[dict]] = []
     for q in queries:
         try:
             got = gnews(q, lang, after, before)
         except Exception as e:  # noqa: BLE001
             bundle["errors"].append(f"SEARCH_FAILED {q!r}: {type(e).__name__}")
             continue
+        keep = []
         for it in got:
             pub = pd.Timestamp(it["published"])
             if pub > t:  # day-granular before: leaks; exact re-filter
@@ -186,9 +226,17 @@ def retrieve(x, opp: str) -> dict:
             if pub < t - LOOKBACK or it["headline"] in seen:
                 continue
             seen.add(it["headline"])
-            bundle["items"].append(it)
-    bundle["items"].sort(key=lambda i: i["published"], reverse=True)
-    bundle["items"] = bundle["items"][:MAX_ITEMS]
+            it["query"] = q
+            keep.append(it)
+        keep.sort(key=lambda i: i["published"], reverse=True)
+        per_query.append(keep)
+    # round-robin so a noisy query cannot crowd out a specialist one
+    merged: list[dict] = []
+    while len(merged) < MAX_ITEMS and any(per_query):
+        for lst in per_query:
+            if lst and len(merged) < MAX_ITEMS:
+                merged.append(lst.pop(0))
+    bundle["items"] = merged
     for i, it in enumerate(bundle["items"]):
         it["id"] = f"S{i + 1}"
         it["text"], it["fetch"] = "", "NOT_ATTEMPTED"
@@ -334,13 +382,14 @@ def main() -> None:
     opp = opponents(s)
     OUT.mkdir(parents=True, exist_ok=True)
     rows = []
-    with open(OUT / "p1_bundles.jsonl", "a") as log:
+    with open(OUT / f"p1{VERSION}_bundles.jsonl", "a") as log:
         for i, x in enumerate(s.itertuples(), 1):
             b = retrieve(x, opp[x.ticker])
             log.write(json.dumps(b, ensure_ascii=False) + "\n")
             log.flush()
             if b["state"] == "EVIDENCE_AVAILABLE":
-                a, f = judge(x, b, full=False), judge(x, b, full=True)
+                a = judge(x, b, full=False)
+                f = judge(x, b, full=True) if MAX_FETCH else a
             else:  # fail closed: a failed search is not NONE
                 a = f = {"verdict": b["state"], "reason": "", "sec": 0.0}
             n_text = sum(1 for it in b["items"] if it["text"])
@@ -361,7 +410,7 @@ def main() -> None:
                   f"text={n_text} sonnet={x.sonnet:10} head={a['verdict']:10} full={f['verdict']}",
                   flush=True)
     res = pd.DataFrame(rows)
-    res.to_parquet(OUT / f"p1_results{'_limit' if limit else ''}.parquet")
+    res.to_parquet(OUT / f"p1{VERSION}_results{'_limit' if limit else ''}.parquet")
     print("\nheadlines-only vs Sonnet:\n", pd.crosstab(res.sonnet, res.headline))
     print("\nfull-text vs Sonnet:\n", pd.crosstab(res.sonnet, res.full))
     sub = res[res.n_text > 0]
