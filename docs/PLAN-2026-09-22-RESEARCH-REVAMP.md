@@ -202,6 +202,46 @@ search -- RotoWire/CBS player-news RSS, HLTV/Liquipedia for esports, league
 availability reports; (2) localised team names per league; (3) re-run P1
 headlines-only; (4) only then speed (target: median < 30s).
 
+### P1 v2 -- STATUS: DONE 2026-09-25
+
+Revised step (1): specialist RSS feeds were dropped. RotoWire's and HLTV's own
+feeds carry only the latest 5-10 items and cannot be queried by date, so they
+are useless for replay and would need a collector running continuously. But
+Google News indexes RotoWire by date: `intitle:Injury "<team>"
+site:rotowire.com` returns the player notes. v2 adds that query per side, an
+esports-news-sites query, Japanese/Korean club names (ソフトバンク, not
+"Fukuoka Hawks"), round-robin merging so a noisy query cannot crowd out a
+specialist one, and headlines only. Commit `613a7ec`.
+
+| headlines only | v1 | v2 |
+|---|---|---|
+| Sonnet positives found (of 41) | 11 | **25** |
+| ...right side | 11 | 23 |
+| ...wrong side | 0 | 2 |
+| said NONE on a positive | 24 | 10 |
+| failures on positives (cap / bad citation) | 4 | 6 |
+| flags on Sonnet NONEs (of 60) | 10 | 10 |
+| median seconds / market | -- | 77 |
+
+- **CAUTION: optimistic.** v2's queries were written after reading v1's misses
+  on these same 41 markets. The held-out test is still owed.
+- By league: MLB 9/10, NCAAF 7/11, soccer 7/10, NPB 1/3 (both misses are
+  postponements), KBO 1/1. **Esports 1/8** -- the esports-site query returns
+  match-listing pages; HLTV short news is indexed under a generic title. Esports
+  needs a different source (Liquipedia's API transfer pages) or should be
+  dropped from scope.
+- The 2 wrong-side answers are fixable: (a) RotoWire headlines name the player,
+  never the team ("Robert Briggs Injury: Sidelined") and the model guessed his
+  team wrong -- tag each item with the side whose query found it; (b) Juventus
+  vs Juventus Next Gen -- senior/reserve-side name collisions need an exclusion.
+- The 10 NONE-side flags are now mostly REAL injury news (RotoWire: Caissie to
+  IL, Judge, Correa, O'Neill out for season; Liquid's flashie stand-in) that
+  Sonnet rejected as not "dated today". That is a POLICY gap, not a model
+  error: v2 looks back 3 days, Sonnet's prompt demanded same-day reports.
+  News several days old is likely priced in. Decide the freshness window
+  deliberately (probably <= 24h) before the held-out test.
+- Speed is unchanged: median 77s, p90 162s, against the 30s bar.
+
 ## Decision
 
 Replace the current autonomous Claude web-research session with a staged,
