@@ -79,6 +79,10 @@ MANIFEST = {
     "generation": 1,
     "parent_id": "injury_news_favourite",
     "created_at": "2026-09-11T02:30:00+00:00",
+    # Retired 2026-09-25 when Sonnet left the research track: its history was
+    # researched by Sonnet and must not be continued by another researcher
+    # under the same identity. Succeeded by local_news_favourite.
+    "retired": True,
     "rationale": (
         "Fade a game-winner favourite when a parsed VERDICT names THIS side as "
         "the one a dated report has hurt. Replaces its parent's substring gate, "

@@ -229,13 +229,15 @@ model (`qwen3.5:9b` via Ollama) is the research engine; Sonnet escalation is
 dropped. Pilot results and the running local-only shadow test are in
 `docs/PLAN-2026-09-22-RESEARCH-REVAMP.md` (P0/P1/P2).
 
-**CURRENT STATE: INTENTIONALLY PAUSED.** The human paused `kalshi_research` on
-2026-09-22 at 08:37 PDT. The old Sonnet LaunchAgent was booted out while idle;
-capture, settlement, paper trading, and `kalshi_quant` evolution continue. Do
-not reload the old research plist. The replacement separates deterministic
-Python search/fetch, an append-only evidence bundle, one local structured
-inference, and narrowly gated Sonnet escalation. The plan and resume gates are
-in `docs/PLAN-2026-09-22-RESEARCH-REVAMP.md`.
+**CURRENT STATE: RUNNING ON THE LOCAL ENGINE since 2026-09-26** (paused
+2026-09-22, resumed by the human). launchd `com.avoforecast.kalshi-research-local`
+hourly at :50, 12 research calls/pass, no Claude calls. The live candidate is
+`local_news_favourite` (fresh identity, created 2026-09-26);
+`roster_news_favourite` is retired -- scored on its Sonnet history, never asked
+again. Every retrieval lands in `data/kalshi_research/evidence/`. NEVER reload
+the old `com.avoforecast.kalshi-research-run` plist (Sonnet). Details and the
+open questions (in-game research, rate) are in
+`docs/PLAN-2026-09-22-RESEARCH-REVAMP.md`.
 
 ### Potential direction: invert the scoring loop (not built)
 

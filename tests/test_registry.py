@@ -7,9 +7,9 @@ def test_experiments_are_discoverable():
     assert "kalshi_research" in names
 
 
-def test_kalshi_research_is_paused():
-    """Paused by the human on 2026-09-22 pending the local-research revamp."""
-    assert registry.config("kalshi_research")["experiment"]["status"] == "paused"
+def test_kalshi_research_is_active():
+    """Paused 2026-09-22; resumed by the human 2026-09-26 on the local engine."""
+    assert registry.config("kalshi_research")["experiment"]["status"] == "active"
 
 
 def test_seed_candidates_load():

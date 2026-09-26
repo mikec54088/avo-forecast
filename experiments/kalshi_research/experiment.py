@@ -198,7 +198,8 @@ class KalshiResearchExperiment:
                 created_at=datetime.fromisoformat(m["created_at"]),
                 module_path=f"{pkg.__name__}.{info.name}",
                 rationale=m.get("rationale", ""),
-                meta={"role": m.get("role", "candidate")},
+                meta={"role": m.get("role", "candidate"),
+                      "retired": bool(m.get("retired", False))},
             ))
         return out
 

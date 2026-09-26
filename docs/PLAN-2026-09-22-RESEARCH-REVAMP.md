@@ -495,3 +495,38 @@ tokens. Consequences:
 - Section 4 (optional Sonnet escalation) is DROPPED. Hard cases fail closed
   (defer) instead of escalating.
 - The old Sonnet research plist stays unloaded permanently.
+
+## RESUMED 2026-09-26 on the local engine (human decision)
+
+The human stopped the P2 shadow test and resumed the research job on the
+local model ("if necessary start fresh"). This skips the R3 adjudication and
+R4 canary gates by explicit human choice; the fail-closed and evidence-store
+requirements are kept.
+
+P2 at the stop: 48 markets (12 vs Sonnet, all agreed NONE; 36 local-only).
+Local verdicts: 32 NONE, 5 BOTH, 4 THIS_SIDE, 2 OTHER_SIDE, 1 no results,
+4 failures (3 THINK_CAP, 1 INVALID_CITATION). Median 20s, max 279s. Not
+adjudicated.
+
+What was built:
+- `experiments/kalshi_research/local_research.py` -- the v3 pipeline as a
+  `Researcher`. Replies `VERDICT: THIS_SIDE|OTHER_SIDE|BOTH|NONE` (a token,
+  not a team name: the old name gate mis-reads crosstown games). Every
+  retrieval is appended to `data/kalshi_research/evidence/` and the reply
+  names its bundle id. Any failure returns `error`, so the runner defers.
+- `candidates/local_news_favourite.py` -- FRESH identity (created_at
+  2026-09-26), roster_news_favourite's selection and decision rule unchanged,
+  so only the engine differs. `roster_news_favourite` is marked
+  `retired: True`: kept for scoring its Sonnet history, never asked again.
+- Runner: `--researcher local` (now the default), skips retired candidates,
+  lock stale window 40 -> 90 min.
+- launchd `com.avoforecast.kalshi-research-local`, hourly :50, 12 calls/pass.
+
+First pass (capped at 2 calls): both researched NCAAF favourites, both
+THIS_SIDE from RotoWire injury notes, both faded 0.04; 121s and 244s.
+
+OPEN: `wants_research` allows the whole game day, so a game already in
+progress can be researched (the old arm did this too -- see the Alabama
+live-blog finding). Inherited unchanged to keep one change at a time; a
+start-time gate is the obvious next change. The rate limit (~1.3 scoreable
+decisions/day, fade-only) is also inherited.

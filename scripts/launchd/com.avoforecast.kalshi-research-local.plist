@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- The kalshi_research forward pass on the LOCAL engine. Resumed by the human
+     2026-09-26 after they stopped all Sonnet use in the research track
+     (2026-09-25). Replaces com.avoforecast.kalshi-research-run, which is the
+     old Sonnet runner and must never be reloaded.
+
+     No Claude calls: the researcher is qwen3.5:9b via Ollama (Ollama.app
+     starts at login) plus Google News / Liquipedia retrieval, and it fails
+     closed -- if Ollama or the search is down, markets are DEFERRED, never
+     logged as "no news".
+
+     Hourly at :50, after the full snapshot lands (~:31). A local research
+     call takes ~2-4 min (measured 2026-09-26: 121s and 244s), so the pass is
+     capped at 12 calls (~25-50 min); overflow markets are deferred to the
+     next pass, and the runner's lock skips a pass that would overlap. -->
+<dict>
+    <key>Label</key>
+    <string>com.avoforecast.kalshi-research-local</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/hermesagent/miniconda3/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>-m</string>
+        <string>experiments.kalshi_research.runner</string>
+        <string>run</string>
+        <string>--source</string>
+        <string>full</string>
+        <string>--researcher</string>
+        <string>local</string>
+        <string>--max-close-hours</string>
+        <string>120</string>
+        <string>--final-hours</string>
+        <string>1</string>
+        <string>--max-markets</string>
+        <string>50000</string>
+        <string>--max-research-per-pass</string>
+        <string>12</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/hermesagent/.local/bin:/Users/hermesagent/miniconda3/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/hermesagent/development/avo-forecast</string>
+
+    <key>StartCalendarInterval</key>
+    <dict><key>Minute</key><integer>50</integer></dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/research.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/research.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

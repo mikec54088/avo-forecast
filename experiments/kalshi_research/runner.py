@@ -58,7 +58,7 @@ from experiments.kalshi_research.types import (
 
 SNAPSHOT_ROOT = Path(__file__).resolve().parents[2] / "data" / "kalshi_quant" / "snapshots"
 MAX_SPREAD = 0.08          # simulate_fill refuses wider books; do not spend research on them
-LOCK_STALE_SECONDS = 40 * 60
+LOCK_STALE_SECONDS = 90 * 60   # a local-model pass can run ~50 min at its cap
 
 
 class _Lock:
@@ -136,6 +136,11 @@ def run_pass(
     exp = experiment or registry.load("kalshi_research")
     cands = []
     for c in exp.seed_candidates():
+        if c.meta.get("retired"):
+            # Kept for scoring its history; never asked again. A retired
+            # research candidate must not receive answers from a different
+            # researcher under its old identity (INVARIANT #7).
+            continue
         try:
             cands.append((c, exp.load_candidate(c)))
         except Exception as exc:
@@ -196,7 +201,7 @@ def run_pass(
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["run"])
-    ap.add_argument("--researcher", default="claude", choices=["claude", "null"])
+    ap.add_argument("--researcher", default="local", choices=["local", "claude", "null"])
     ap.add_argument("--model", default=None,
                     help="research model; defaults to "
                          "researcher.DEFAULT_RESEARCH_MODEL. Pinned on purpose "
@@ -231,8 +236,10 @@ def main() -> None:
     with _Lock(forecast_log.DATA_ROOT):
         started = datetime.now(timezone.utc)
         df = pd.read_parquet(snap)
-        researcher = BudgetedResearcher(make(args.researcher, args.model),
-                                        args.max_research_per_pass)
+        inner = make(args.researcher, args.model)
+        if hasattr(inner, "bind"):
+            inner.bind(df)   # the local researcher reads title/opponent from this pass
+        researcher = BudgetedResearcher(inner, args.max_research_per_pass)
         path, st = run_pass(researcher, df,
                             max_close_hours=args.max_close_hours,
                             max_markets=args.max_markets, budget=args.budget,

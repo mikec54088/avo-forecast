@@ -9,6 +9,7 @@ from __future__ import annotations
 import subprocess
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from avo.core.backends import resolve_cli
 from experiments.kalshi_research.types import ResearchResult
@@ -176,9 +177,13 @@ class ClaudeResearcher:
 DEFAULT_RESEARCH_MODEL = "claude-sonnet-5"
 
 
-def make(kind: str, model: str | None = None) -> NullResearcher | ClaudeResearcher:
+def make(kind: str, model: str | None = None) -> Any:
+    if kind == "local":
+        # The research engine since 2026-09-25 (no Sonnet in the research track).
+        from experiments.kalshi_research.local_research import LocalResearcher
+        return LocalResearcher()
     if kind == "claude":
         return ClaudeResearcher(model=model or DEFAULT_RESEARCH_MODEL)
     if kind == "null":
         return NullResearcher()
-    raise KeyError(f"unknown researcher {kind!r}; use claude or null")
+    raise KeyError(f"unknown researcher {kind!r}; use local, claude or null")

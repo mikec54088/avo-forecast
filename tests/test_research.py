@@ -75,10 +75,11 @@ def test_a_pass_logs_every_candidate_on_every_selected_market(tmp_path):
     path, st = run_pass(NullResearcher(), _snapshot(4), now=NOW, root=tmp_path,
                         experiment=EXP)
     df = forecast_log.read(tmp_path)
-    n_cands = len(EXP.seed_candidates())
+    n_cands = sum(not c.meta.get("retired") for c in EXP.seed_candidates())
     assert st["markets"] == 4 and st["forecasts"] == 4 * n_cands
     assert len(df) == 4 * n_cands and path is not None
-    assert set(df["candidate_id"]) == {c.candidate_id for c in EXP.seed_candidates()}
+    assert set(df["candidate_id"]) == {c.candidate_id for c in EXP.seed_candidates()
+                                       if not c.meta.get("retired")}
     assert (df["forecast_at"] == pd.Timestamp(NOW)).all()
 
 
@@ -87,7 +88,8 @@ def test_a_market_is_forecast_at_most_once_per_candidate(tmp_path):
     run_pass(NullResearcher(), _snapshot(4), now=NOW, root=tmp_path, experiment=EXP)
     _, st = run_pass(NullResearcher(), _snapshot(4), now=NOW + timedelta(minutes=15),
                      root=tmp_path, experiment=EXP)
-    assert st["forecasts"] == 0 and st["skipped_seen"] == 4 * len(EXP.seed_candidates())
+    n_active = sum(not c.meta.get("retired") for c in EXP.seed_candidates())
+    assert st["forecasts"] == 0 and st["skipped_seen"] == 4 * n_active
 
 
 def test_a_raising_candidate_is_logged_as_the_market_not_dropped(tmp_path):
@@ -118,7 +120,7 @@ def test_an_abstaining_candidate_is_deferred_until_the_final_window(tmp_path):
     early = _snapshot(3, close_in_h=48.0)
     _, st = run_pass(NullResearcher(), early, now=NOW, root=tmp_path, experiment=EXP,
                      final_hours=1.0)
-    n_cands = len(EXP.seed_candidates())
+    n_cands = sum(not c.meta.get("retired") for c in EXP.seed_candidates())
     assert st["asked"] == 3 * n_cands and st["deferred"] == 3 * n_cands
     assert st["forecasts"] == 0 and forecast_log.read(tmp_path).empty
     late = _snapshot(3, close_in_h=0.5)
@@ -429,7 +431,7 @@ def test_only_outcomes_resolved_after_the_forecast_count(tmp_path):
         # T2 unresolved: excluded
     })
     obs = load_forecast_observations(tmp_path, tmp_path)
-    n_cands = len(EXP.seed_candidates())
+    n_cands = sum(not c.meta.get("retired") for c in EXP.seed_candidates())
     assert len(obs) == 1 * n_cands
     assert {o.entry.ticker for o in obs} == {"KXTEST-T0"}
 

@@ -180,3 +180,13 @@ research arm and writes no forecasts. It stops itself at 50 markets; then:
 
     launchctl bootout gui/$(id -u)/com.avoforecast.kalshi-research-shadow
     tail data/kalshi_research/pilot/p2_run.log
+
+## Research on the LOCAL engine (2026-09-26)
+
+`com.avoforecast.kalshi-research-local` is the research runner now: hourly at
+:50, qwen3.5:9b via Ollama, no Claude calls, log in `data/research.log`. The
+shadow test above is finished and unloaded. `kalshi-research-run` (Sonnet)
+stays unloaded for good.
+
+    cp scripts/launchd/com.avoforecast.kalshi-research-local.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.avoforecast.kalshi-research-local.plist
