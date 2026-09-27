@@ -187,6 +187,23 @@ Read this before proposing anything; most obvious ideas are already dead.
   `k = max(1, n // 4)` gives ONE parent and both slots breed from it, which is
   the exploit-only monoculture the explore slot now breaks.
 
+- **Selling before settlement: measured 2026-09-27, not built.** Asked "why
+  only trades that settle -- why not buy low, sell high?" `scripts/swing_room.py`
+  simulated executable round trips on 5 weeks of hourly snapshots (buy at ask,
+  sell at bid later, fee both ways, final hour excluded) with HINDSIGHT on
+  direction -- an upper bound. Round-trip cost is 6-10c typical (4c only on the
+  tightest books), not the ~2c entry-only hurdle. Share of 72h windows where a
+  correct direction call beat all costs: crypto 52%, gas 52%, short-dated
+  politics 38%, stocks/FX 37%, weather 33% -- but sports games before the game
+  5%, and anything closing >30 days out 3-21% (long-dated politics 5%, median
+  move 0.6c vs 6.7c cost). So: trading years-long markets on swings is dead;
+  pre-game sports barely moves (the moves are in-game, which hourly capture
+  cannot see); the room is in short-dated markets tracking a daily-moving
+  number, which are equally forecastable to settlement. Decision: no separate
+  swing experiment for now -- point both tracks at those categories, and add
+  early exit later as a way to collect a proven edge (it would be a G1/G2/G5
+  question then). Full table: `data/swing_room.csv`.
+
 ### The research track, measured 2026-09-20; paused 2026-09-22
 
 The measurements below are the final pre-pause assessment. At that time it was
