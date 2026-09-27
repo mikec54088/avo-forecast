@@ -80,6 +80,10 @@ class BudgetedResearcher:
         self.name = getattr(self.inner, "name", "unknown")
 
     def research(self, query: str) -> ResearchResult:
+        cached = getattr(self.inner, "is_cached", None)
+        if cached is not None and cached(query):
+            # A shared answer costs nothing; it neither needs nor spends the cap.
+            return self.inner.research(query)
         if self.used >= self.budget:
             self.refused += 1
             return ResearchResult(query, "", 0.0, calls=0,

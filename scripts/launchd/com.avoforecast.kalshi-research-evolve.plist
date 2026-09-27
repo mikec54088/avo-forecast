@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- WEEKLY research-candidate generation. Decided by the human 2026-09-26:
+     Sonnet writes research strategies, once a week to start. Sonnet here
+     WRITES candidates; it never answers research queries (that is the local
+     engine -- the no-Sonnet-in-research decision of 2026-09-25 stands).
+
+     Cost, measured on 12 kalshi_quant generation sessions 2026-09-20..26:
+     ~5.5M tokens per session (~130k fresh input, ~65k output, the rest cache
+     reads), ~15 min each. -n 2 => ~11M tokens per week.
+
+     `--force` is deliberate: a research candidate needs MONTHS of live
+     forecasts to be ranked, so the ready-to-rank and pool-changed gates would
+     refuse every week. Until evidence replay can score research candidates
+     (data/kalshi_research/evidence/), a weekly run is idea generation, not
+     selection -- parents are chosen on thin data, knowingly.
+
+     Sunday 08:05, well clear of the nightly quant evolve (03:35); both take
+     the same runs/ lock, so they can never overlap. Model pinned (the CLI
+     default is a user setting). One run id so the run's memory accumulates. -->
+<dict>
+    <key>Label</key>
+    <string>com.avoforecast.kalshi-research-evolve</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/hermesagent/miniconda3/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>-m</string>
+        <string>avo.cli</string>
+        <string>evolve</string>
+        <string>kalshi_research</string>
+        <string>--model</string>
+        <string>sonnet</string>
+        <string>-n</string>
+        <string>2</string>
+        <string>--generations</string>
+        <string>1</string>
+        <string>--force</string>
+        <string>--run-id</string>
+        <string>kalshi_research-20260927T000000Z</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict><key>PATH</key><string>/Users/hermesagent/.local/bin:/Users/hermesagent/miniconda3/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+    <key>WorkingDirectory</key>
+    <string>/Users/hermesagent/development/avo-forecast</string>
+    <key>StartCalendarInterval</key>
+    <dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>8</integer><key>Minute</key><integer>5</integer></dict>
+    <key>StandardOutPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/research-evolve.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/research-evolve.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

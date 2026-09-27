@@ -279,10 +279,32 @@ class KalshiResearchExperiment:
             "experiment in this repository.",
             "",
             "Read experiments/kalshi_research/types.py for the contract. The "
-            "candidate is forecast(market, context) -> float, and context.research"
-            "(query) returns text from a live web search. Each call is a model "
-            "invocation with search; the budget is context.budget per market "
-            "(default 3) and exceeding it raises.",
+            "candidate is forecast(market, context) -> float; the budget is "
+            "context.budget research calls per market (default 3) and exceeding "
+            "it raises.",
+            "",
+            "THE RESEARCH ENGINE (since 2026-09-26; read "
+            "experiments/kalshi_research/local_research.py). context.research"
+            "(query) is answered by a LOCAL pipeline, not a web-browsing model: "
+            "fixed news searches for both sides of a GAME market (news <= 24h "
+            "old) judged by a small local model. Consequences you must design "
+            "around:",
+            "  - The query text is ignored except for the ticker, which MUST "
+            "appear as \"(TICKER)\" -- e.g. f\"... {market.title} "
+            "({market.ticker})?\". Without it the call fails.",
+            "  - It only understands game-winner markets in RESEARCH_SERIES "
+            "(experiments/kalshi_research/candidates/roster_news_favourite.py). "
+            "Research on any other market fails and the market is deferred.",
+            "  - The reply is exactly two lines: \"VERDICT: <token>\" and "
+            "\"EVIDENCE: <cited headlines>\". The token is THIS_SIDE (news hurts "
+            "the side this market names), OTHER_SIDE (hurts the opponent), BOTH, "
+            "or NONE. Parse it with types.parse_verdict; never match team names.",
+            "  - The answer depends only on the market, so every candidate "
+            "asking about the same market shares one call. Candidates differ in "
+            "WHICH markets they research and HOW a token maps to a probability "
+            "-- that is the design space.",
+            "  - A call takes 2-4 minutes of local compute and a pass allows 12, "
+            "shared by all candidates. Be selective.",
             "",
             "THE GOVERNING CONSTRAINT. Crossing the spread plus fees costs about "
             "2 probability points. The book alone has been searched exhaustively "
@@ -319,8 +341,11 @@ class KalshiResearchExperiment:
         lines += [
             "Give it a docstring stating the edge, which markets it researches "
             "and why, what it asks, how the answer maps to a probability, and "
-            "what would falsify it. It cannot be backtested: replaying an old "
-            "market against today's web returns the answer. Do not try.",
+            "what would falsify it. It cannot be backtested against today's "
+            "web: replaying an old market returns the answer. Do not try. "
+            "(Evidence captured at the time is being stored in "
+            "data/kalshi_research/evidence/ for exactly this reason; it is "
+            "not yet large enough to test against.)",
             "",
             "Do not modify, create, or delete ANY file outside "
             "experiments/kalshi_research/candidates/, and leave no scratch files.",

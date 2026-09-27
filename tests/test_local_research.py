@@ -200,3 +200,38 @@ def test_the_retired_candidate_is_never_asked(tmp_path):
     df = forecast_log.read(tmp_path)
     assert "roster_news_favourite" not in set(df["candidate_id"])
     assert "local_news_favourite" in {c.candidate_id for c in EXP.seed_candidates()}
+
+
+# ------------------------------------------------------------- sharing and capture
+
+def test_candidates_asking_about_one_market_share_one_call(researcher, monkeypatch):
+    from experiments.kalshi_research.researcher import BudgetedResearcher
+    n = {"calls": 0}
+
+    def fake(m):
+        n["calls"] += 1
+        return _bundle("NO_RELEVANT_RESULTS")
+    monkeypatch.setattr(lr, "retrieve", fake)
+    b = BudgetedResearcher(researcher, budget=1)
+    first, second = b.research(QUERY), b.research("other wording (" + TICKER + ")")
+    assert n["calls"] == 1 and first.text == second.text and second.calls == 1
+    assert b.used == 1 and not second.error
+
+
+def test_capture_checkpoints_follow_the_ticker_start_time():
+    from experiments.kalshi_research import capture
+    cps = dict(capture.checkpoints("KXMLBGAME-26SEP261910CWSCHC"))
+    start = datetime(2026, 9, 26, 23, 10, tzinfo=UTC)          # 19:10 ET
+    assert cps == {"T-12h": start - timedelta(hours=12), "T-3h": start - timedelta(hours=3),
+                   "T-1h": start - timedelta(hours=1)}
+    assert set(dict(capture.checkpoints("KXNCAAFGAME-26SEP26OKSTWVU"))) == {
+        "day-06Z", "day-12Z", "day-15Z"}
+
+
+def test_capture_takes_each_checkpoint_once(monkeypatch):
+    from experiments.kalshi_research import capture
+    snap = _snap()
+    now = datetime(2026, 9, 26, 22, 0, tzinfo=UTC)            # T-1h is 22:10
+    todo = capture.due(snap, now, set())
+    assert [lab for _, lab, _ in todo] == ["T-1h"]
+    assert capture.due(snap, now, {"KXMLBGAME-26SEP261910CWSCHC|T-1h"}) == []

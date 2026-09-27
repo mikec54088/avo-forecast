@@ -530,3 +530,36 @@ progress can be researched (the old arm did this too -- see the Alabama
 live-blog finding). Inherited unchanged to keep one change at a time; a
 start-time gate is the obvious next change. The rate limit (~1.3 scoreable
 decisions/day, fade-only) is also inherited.
+
+## Evidence capture and weekly research generation (2026-09-26)
+
+Human decisions: save evidence 3 times per game; Sonnet writes research
+candidates once a week to start (it never answers research queries).
+
+- `experiments/kalshi_research/capture.py`, launchd
+  `com.avoforecast.kalshi-research-capture` hourly :35. One bundle per game
+  EVENT in RESEARCH_SERIES (no price filter) at T-12h/T-3h/T-1h from the
+  ticker's Eastern start time, or 06/12/15Z on game day for date-only
+  tickers (most NCAAF). Retrieval only. Measured: 105-290 game events/day,
+  ~11 KB/bundle => ~3.5-9.5 MB/day; ~1,900-5,200 Google News requests/day,
+  capped at 60 captures (~360 requests) per run.
+- `LocalResearcher` now shares one answer per market per pass across all
+  candidates (the answer ignores query wording), and a shared answer does not
+  spend the pass cap.
+- The research `variation_prompt` now describes the local engine: ticker in
+  "(TICKER)", game markets only, reply tokens, shared calls, 12 calls/pass.
+- launchd `com.avoforecast.kalshi-research-evolve`, Sunday 08:05, `-n 2
+  --model sonnet --force`, run id `kalshi_research-20260927T000000Z`.
+  `--force` because research candidates need months to rank; until evidence
+  replay scoring exists, a weekly run is idea generation, not selection.
+  Cost measured on the quant loop: ~5.5M tokens/session => ~11M/week.
+- For scale: the old Sonnet RESEARCH lookups cost ~150k tokens each, ~100/day,
+  ~15M tokens/day -- more than the whole nightly quant generation.
+
+`avo rank kalshi_research` (2026-09-26): roster_news_favourite P&L -0.1205
+selection / -0.1089 confirmation per contract, on few fills; local_news_
+favourite has no resolved forecasts yet.
+
+NEXT: evidence-replay scoring -- run the local model over stored capture
+bundles and score candidates on them, so research candidates can be ranked in
+minutes like quant ones. Needs a few weeks of captures first.

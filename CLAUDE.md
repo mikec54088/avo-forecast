@@ -239,6 +239,13 @@ the old `com.avoforecast.kalshi-research-run` plist (Sonnet). Details and the
 open questions (in-game research, rate) are in
 `docs/PLAN-2026-09-22-RESEARCH-REVAMP.md`.
 
+Since 2026-09-26 also: **evidence capture** (`kalshi-research-capture`, hourly,
+every research-series game at T-12h/T-3h/T-1h, retrieval only, into
+`data/kalshi_research/evidence/`) and **weekly research generation**
+(`kalshi-research-evolve`, Sunday 08:05, Sonnet WRITES candidates with
+`--force` because research candidates need months to rank). Sonnet never
+answers research queries.
+
 ### Potential direction: invert the scoring loop (not built)
 
 `avo rank` takes ~54 min because `score_all` loops candidates OUTER and each

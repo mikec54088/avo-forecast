@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- Evidence capture for kalshi_research (experiments/kalshi_research/capture.py).
+     Decided by the human 2026-09-26: save what the web said about every game
+     in the research series 3 times before it (T-12h / T-3h / T-1h; fixed
+     06/12/15Z checkpoints for date-only tickers), so research ideas can later
+     be tested on evidence as it was -- the one step that cannot be replayed.
+
+     Retrieval only: no model call, no Claude call. ~11 KB per bundle,
+     ~3-10 MB/day. Hourly at :35 (after the full snapshot, ~:31), at most 60
+     captures per run (~360 Google News requests) to stay polite. -->
+<dict>
+    <key>Label</key>
+    <string>com.avoforecast.kalshi-research-capture</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/hermesagent/miniconda3/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>-m</string>
+        <string>experiments.kalshi_research.capture</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict><key>PATH</key><string>/Users/hermesagent/.local/bin:/Users/hermesagent/miniconda3/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+    <key>WorkingDirectory</key>
+    <string>/Users/hermesagent/development/avo-forecast</string>
+    <key>StartCalendarInterval</key>
+    <dict><key>Minute</key><integer>35</integer></dict>
+    <key>StandardOutPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/research-capture.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/research-capture.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

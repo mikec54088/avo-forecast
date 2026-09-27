@@ -190,3 +190,12 @@ stays unloaded for good.
 
     cp scripts/launchd/com.avoforecast.kalshi-research-local.plist ~/Library/LaunchAgents/
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.avoforecast.kalshi-research-local.plist
+
+## Research evidence capture and weekly generation (2026-09-26)
+
+    com.avoforecast.kalshi-research-capture   hourly :35   data/research-capture.log
+    com.avoforecast.kalshi-research-evolve    Sun 08:05    data/research-evolve.log
+
+Capture makes no model or Claude calls. The weekly evolve spends ~11M Sonnet
+tokens (two ~15-minute generation sessions); it shares the runs/ lock with the
+nightly quant evolve, so the two never overlap.

@@ -471,6 +471,12 @@ class LocalResearcher:
     evidence_root: Path = EVIDENCE_ROOT
     name: str = ""
     _snapshot: pd.DataFrame | None = field(default=None, repr=False)
+    # The answer depends only on the market, never on the query's wording, so
+    # every candidate asking about the same market in a pass shares ONE call.
+    # Without this, each new research candidate would multiply the 2-4 min of
+    # local compute per market.
+    _cache: dict[str, tuple[float, ResearchResult]] = field(default_factory=dict, repr=False)
+    cache_ttl_s: float = 55 * 60
 
     def __post_init__(self) -> None:
         self.name = f"local:{MODEL}@{model_digest()}:{PIPELINE_VERSION}"
@@ -494,7 +500,25 @@ class LocalResearcher:
                       opponent=opponent(self._snapshot, str(r["event_ticker"]), me),
                       asked_at=now)
 
+    def is_cached(self, query: str) -> bool:
+        tk = _TICKER.search(query)
+        hit = self._cache.get(tk.group(1)) if tk else None
+        return bool(hit and time.monotonic() - hit[0] < self.cache_ttl_s)
+
     def research(self, query: str) -> ResearchResult:
+        tk = _TICKER.search(query)
+        hit = self._cache.get(tk.group(1)) if tk else None
+        if hit and self.is_cached(query):
+            # calls=1: for the CANDIDATE this market was researched, and the
+            # runner must consume it; the pass cap is not spent (see
+            # BudgetedResearcher).
+            return ResearchResult(query, hit[1].text, 0.0, error=hit[1].error)
+        r = self._research(query)
+        if tk:
+            self._cache[tk.group(1)] = (time.monotonic(), r)
+        return r
+
+    def _research(self, query: str) -> ResearchResult:
         t0 = time.monotonic()
         try:
             m = self._market(query, datetime.now(UTC))
