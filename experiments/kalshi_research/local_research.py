@@ -316,6 +316,55 @@ def retrieve(m: Market) -> dict[str, Any]:
     return bundle
 
 
+def retrieve_topic(event_ticker: str, queries: list[str], asked_at: datetime,
+                   lang: str = "en") -> dict[str, Any]:
+    """Retrieval for a non-game event (politics): given queries, same 24h window,
+    exact re-filter and round-robin merge as retrieve()."""
+    t = pd.Timestamp(asked_at)
+    after = (t - LOOKBACK).strftime("%Y-%m-%d")
+    before = (t + timedelta(days=1)).strftime("%Y-%m-%d")
+    bundle: dict[str, Any] = {
+        "id": f"{event_ticker}@{t.strftime('%Y%m%dT%H%M%SZ')}", "ticker": event_ticker,
+        "asked_at": t.isoformat(), "pipeline": PIPELINE_VERSION, "lang": lang,
+        "queries": queries, "state": "", "errors": [], "items": [], "dropped_after_asked": 0}
+    seen: set[str] = set()
+    per_query: list[list[dict[str, Any]]] = []
+    for q in queries:
+        try:
+            got = gnews(q, lang, after, before)
+        except Exception as e:  # noqa: BLE001 -- recorded; all-failed => SEARCH_FAILED
+            bundle["errors"].append(f"SEARCH_FAILED {q!r}: {type(e).__name__}")
+            continue
+        keep = []
+        for it in got:
+            pub = pd.Timestamp(it["published"])
+            if pub > t:
+                bundle["dropped_after_asked"] += 1
+                continue
+            if pub < t - LOOKBACK or it["headline"] in seen:
+                continue
+            seen.add(it["headline"])
+            it["query"] = q
+            keep.append(it)
+        keep.sort(key=lambda i: i["published"], reverse=True)
+        per_query.append(keep)
+    merged: list[dict[str, Any]] = []
+    while len(merged) < MAX_ITEMS and any(per_query):
+        for lst in per_query:
+            if lst and len(merged) < MAX_ITEMS:
+                merged.append(lst.pop(0))
+    for i, it in enumerate(merged):
+        it["id"] = f"S{i + 1}"
+    bundle["items"] = merged
+    if queries and sum(e.startswith("SEARCH_FAILED") for e in bundle["errors"]) == len(queries):
+        bundle["state"] = "SEARCH_FAILED"
+    elif not merged:
+        bundle["state"] = "NO_RELEVANT_RESULTS"
+    else:
+        bundle["state"] = "EVIDENCE_AVAILABLE"
+    return bundle
+
+
 def store(bundle: dict[str, Any], root: Path = EVIDENCE_ROOT) -> None:
     """Append-only: one JSON line per retrieval, never rewritten."""
     day = bundle["asked_at"][:10]

@@ -235,3 +235,53 @@ def test_capture_takes_each_checkpoint_once(monkeypatch):
     todo = capture.due(snap, now, set())
     assert [lab for _, lab, _ in todo] == ["T-1h"]
     assert capture.due(snap, now, {"KXMLBGAME-26SEP261910CWSCHC|T-1h"}) == []
+
+
+# ------------------------------------------------------------- politics capture
+
+def test_say_events_search_the_quoted_words_in_batches():
+    from experiments.kalshi_research import capture
+    titles = [f'Will Trump say "w{i}" before Oct 1, 2026?' for i in range(10)]
+    q = capture.topic_queries(titles, "KXTRUMPSAYNICKNAME")
+    assert q[0] == "Trump" and len(q) == 3
+    assert q[1].count(" OR ") == 7 and '"w9"' in q[2]
+
+
+def test_a_narrow_topic_gets_a_broader_search_too():
+    from experiments.kalshi_research import capture
+    q = capture.topic_queries(["Will Trump's RCP approval average be exactly 39.5 on Sep 20?"],
+                              "")
+    assert len(q) == 2 and len(q[1].split()) == 3 and q[0].startswith(q[1])
+
+
+def test_a_title_without_a_topic_falls_back_to_the_series():
+    from experiments.kalshi_research import capture
+    assert capture.topic_queries(["Above 8.3%"], "KXGENERICBALLOTVOTEHUB")[0] == (
+        "generic congressional ballot poll")
+
+
+def test_political_checkpoints_follow_the_close():
+    from experiments.kalshi_research import capture
+    now = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
+    close = datetime(2026, 9, 29, 17, 0, tzinfo=UTC)
+    cps = dict(capture.close_checkpoints(close, now))
+    assert cps["C-3h"] == close - timedelta(hours=3) and cps["C-1h"] == close - timedelta(hours=1)
+    # no daily capture on the closing day: 15Z is inside the final 3h (14Z-17Z)
+    assert {k for k in cps if k.startswith("day-")} == {
+        "day-20260926-15Z", "day-20260927-15Z", "day-20260928-15Z"}
+
+
+def test_only_short_dated_political_events_are_captured():
+    from experiments.kalshi_research import capture
+    now = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
+    base = _snap().iloc[0].to_dict()
+    rows = [{**base, "ticker": "KXTRUMPAPPROVE-26SEP28-B39", "event_ticker": "KXTRUMPAPPROVE-26SEP28",
+             "series_ticker": "KXTRUMPAPPROVE", "title": "RCP approval 39?",
+             "close_time": now + timedelta(days=1)},
+            {**base, "ticker": "KXTRUMPOUT27-X", "event_ticker": "KXTRUMPOUT27-29",
+             "series_ticker": "KXTRUMPOUT27", "title": "Leave office before 2029?",
+             "close_time": now + timedelta(days=800)},
+            {**base, "ticker": "KXDIMAYORGAME-X", "event_ticker": "KXDIMAYORGAME-X",
+             "series_ticker": "KXDIMAYORGAME", "title": "Millonarios wins",
+             "close_time": now + timedelta(days=1)}]
+    assert list(capture.politics(pd.DataFrame(rows), now)) == ["KXTRUMPAPPROVE-26SEP28"]

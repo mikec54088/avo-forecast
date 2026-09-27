@@ -563,3 +563,26 @@ favourite has no resolved forecasts yet.
 NEXT: evidence-replay scoring -- run the local model over stored capture
 bundles and score candidates on them, so research candidates can be ranked in
 minutes like quant ones. Needs a few weeks of captures first.
+
+### Politics added to evidence capture (2026-09-27, human decision)
+
+The "politics has the highest volume" figure behind the recommendation came
+mostly from YEARS-long markets (leave office before 2029, Musk on Mars before
+2099) -- unscoreable in any useful time, and excluded. What remains is still
+real: over 2026-09-20..26, ~565 short-dated political markets in ~122 events
+and ~41 series, spreads mostly 1-2c -- Truth Social post counts, RCP/VoteHub
+approval, executive orders, presidential actions, "will Trump say X",
+announcements.
+
+`capture.py` now takes series matching `POLITICS` that close within 7 days:
+one bundle per EVENT via `local_research.retrieve_topic`, queries built from
+the event's market titles (common topic words, a broader first-three-words
+search, and a "say" event's quoted words in OR-batches of 8; SERIES_TOPIC for
+titles with no topic, e.g. "Above 8.3%"). Checkpoints follow the CLOSE: daily
+15Z within the horizon, then C-3h and C-1h. ~100 captures/day, ~300 requests.
+
+Nothing researches politics yet: the local judge is game-specific (sides).
+A politics judge, and candidates for these markets, come after evidence
+accumulates. Several of these markets are COUNTS or AVERAGES whose best
+evidence is a public tracker rather than news -- worth noticing before
+building a news judge for them.

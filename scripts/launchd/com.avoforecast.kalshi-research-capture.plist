@@ -7,6 +7,10 @@
      06/12/15Z checkpoints for date-only tickers), so research ideas can later
      be tested on evidence as it was -- the one step that cannot be replayed.
 
+     Since 2026-09-27 also short-dated POLITICAL events (Truth Social counts,
+     approval averages, "will X say Y", executive orders): daily at 15Z while
+     within 7 days of close, then 3h and 1h before it; ~100 captures/day.
+
      Retrieval only: no model call, no Claude call. ~11 KB per bundle,
      ~3-10 MB/day. Hourly at :35 (after the full snapshot, ~:31), at most 60
      captures per run (~360 Google News requests) to stay polite. -->
