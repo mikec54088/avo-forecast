@@ -204,6 +204,25 @@ Read this before proposing anything; most obvious ideas are already dead.
   early exit later as a way to collect a proven edge (it would be a G1/G2/G5
   question then). Full table: `data/swing_room.csv`.
 
+- **THE REPLAY P&L LEAKS THE ANSWER (measured 2026-09-28). unclimbed_favourite's
+  edge is an artifact of it.** ENTRY_POLICY scores each market at its LAST quote
+  before resolution -- a point you can only identify in hindsight. Markets that
+  settle EARLY on YES (props, totals, "both teams score": YES the moment it
+  happens, NO only at the final whistle) are therefore caught at a moderate
+  price just before a sudden YES. unclimbed_favourite's replay fills: median 46
+  min before the outcome was known, 81% after kickoff; those settling <1.5h into
+  the game won 82% at a 0.72 mid (+7.5c), those settling at the game's end
+  -2.5c; fixed-time markets (game winners -4.3c, indices +0.9c) never paid.
+  Same 1,443 markets, same candidate, entry moved to the FIRST quote it signals
+  on (no hindsight, what paper does): +0.0472 [+0.020,+0.075] -> +0.0017
+  [-0.026,+0.029]. Paper agrees: -0.0026 [-0.039,+0.034] on 1,354 fills /
+  296 series. The entries POOL is also outcome-selected (a book must stay
+  two-sided until <=60 min before resolution, which winning favourites often
+  do not), so first-signal over the whole pool reads -0.09 and is not a clean
+  estimate either. `scripts/replay_hindsight_check.py` reproduces it. Every
+  replay P&L verdict in this file is suspect until the entry policy is fixed,
+  and fixing it is a G2 question -- not decided.
+
 ### The research track, measured 2026-09-20; paused 2026-09-22
 
 The measurements below are the final pre-pause assessment. At that time it was
