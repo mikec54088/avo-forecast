@@ -256,6 +256,12 @@ the old `com.avoforecast.kalshi-research-run` plist (Sonnet). Details and the
 open questions (in-game research, rate) are in
 `docs/PLAN-2026-09-22-RESEARCH-REVAMP.md`.
 
+Since 2026-09-28: **no research after kickoff** (`markets.game_started`; ~25% of
+calls were in-game before this) and a **politics research candidate**,
+`politics_already_happened` -- yes/no political events in their final 48h,
+"does a dated report say it already happened / was ruled out?". Slow by
+design (~23 markets/week). Details in the plan doc's 2026-09-28 section.
+
 Since 2026-09-26 also: **evidence capture** (`kalshi-research-capture`, hourly,
 every research-series game at T-12h/T-3h/T-1h, retrieval only, into
 `data/kalshi_research/evidence/`) and **weekly research generation**

@@ -39,24 +39,25 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from experiments.kalshi_research import local_research as lr
 from experiments.kalshi_research.candidates.roster_news_favourite import RESEARCH_SERIES
+from experiments.kalshi_research.markets import (
+    _DATED,
+    _MON,
+    POLITICS,
+    POLITICS_HORIZON,
+    start_time,
+    topic_queries,
+)
 from experiments.kalshi_research.runner import latest_snapshot
 
-ET = ZoneInfo("America/New_York")
-_MON = {m: i for i, m in enumerate(
-    ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"], 1)}
-_TIMED = re.compile(r"-(\d{2})([A-Z]{3})(\d{2})(\d{2})(\d{2})")
-_DATED = re.compile(r"-(\d{2})([A-Z]{3})(\d{2})")
 BEFORE = {"T-12h": timedelta(hours=12), "T-3h": timedelta(hours=3), "T-1h": timedelta(hours=1)}
 GAMEDAY_UTC = {"day-06Z": 6, "day-12Z": 12, "day-15Z": 15}
 EARLY = timedelta(minutes=60)     # a run may capture a checkpoint up to this early
@@ -67,37 +68,7 @@ LATE = timedelta(minutes=30)      # ... or this late (a missed run, a slow pass)
 LATE_GAMEDAY = timedelta(hours=3)
 MAX_PER_RUN = 60
 
-POLITICS = re.compile(r"^KX(TRUMP|PRESSSEC|SECPRESS|MAMDANI|TRUTHSOCIAL|APRPOTUS|GENERICBALLOT"
-                      r"|LEAVEPOWELL|VANCE|LEAVITT|SENATE|BILLSCOUNT|FEDGOVNOM|NEWSOM|MUSK"
-                      r"|WHITEHOUSE)")
-POLITICS_HORIZON = timedelta(days=7)
 BEFORE_CLOSE = {"C-3h": timedelta(hours=3), "C-1h": timedelta(hours=1)}
-_STOP = {
-    "will", "the", "a", "an", "be", "of", "in", "on", "at", "by", "to", "for", "from",
-    "before", "after", "between", "and", "or", "any", "least", "than", "more", "less",
-    "exactly", "above", "below", "during", "week", "month", "day", "days", "number",
-    "distinct", "per", "rules", "e", "g", "eg", "include", "including", "other", "next",
-    "his", "her", "their", "this", "that", "what", "which", "who", "is", "are", "have",
-    "has", "make", "made", "take", "did", "does", "do", "say", "said", "says", "us", "et",
-    "am", "pm", "new", "january", "february", "march", "april", "may", "june", "july",
-    "august", "september", "october", "november", "december",
-} | {m.lower() for m in _MON}
-# Some events' titles carry no topic at all ("Above 8.3%"): the series says it.
-SERIES_TOPIC = {
-    "KXGENERICBALLOTVOTEHUB": "generic congressional ballot poll",
-    "KXTRUMPVH": "Trump approval rating poll",
-    "KXTRUMPAPPROVE": "Trump approval rating",
-    "KXAPRPOTUS": "Trump approval rating",
-    "KXTRUTHSOCIAL": "Trump Truth Social posts",
-}
-
-
-def start_time(event_ticker: str) -> datetime | None:
-    m = _TIMED.search(event_ticker)
-    if not m or m.group(2) not in _MON:
-        return None
-    return datetime(2000 + int(m.group(1)), _MON[m.group(2)], int(m.group(3)),
-                    int(m.group(4)), int(m.group(5)), tzinfo=ET).astimezone(UTC)
 
 
 def checkpoints(event_ticker: str) -> list[tuple[str, datetime]]:
@@ -137,44 +108,6 @@ def close_checkpoints(close: datetime, now: datetime) -> list[tuple[str, datetim
         out.append((f"day-{day:%Y%m%d}-15Z", day))
         day += timedelta(days=1)
     return out
-
-
-def _words(text: str) -> list[str]:
-    text = re.sub(r'"[^"]*"', " ", text)
-    return [w for w in re.findall(r"[A-Za-z][A-Za-z'.-]+", text)
-            if w.lower().strip(".'") not in _STOP and len(w) > 2]
-
-
-def topic_queries(titles: list[str], series: str = "") -> list[str]:
-    """At most 4 searches per event: its common topic words (or the series'
-    topic when the titles carry none), then the quoted words of a "say" event
-    in OR-batches of 8."""
-    counts: dict[str, int] = {}
-    order: list[str] = []
-    for t in titles:
-        for w in dict.fromkeys(_words(t)):
-            if w not in counts:
-                order.append(w)
-            counts[w] = counts.get(w, 0) + 1
-    common = [w for w in order if counts[w] >= 0.6 * len(titles)][:6]
-    if len(common) < 2:
-        common = _words(titles[0])[:6]
-    topic = SERIES_TOPIC.get(series) or " ".join(common)
-    if not topic:
-        topic = re.sub(r"^KX", "", series).lower()
-    queries = [topic]
-    # Titles make narrow topics ("...approval rating according RealClearPolitics"
-    # found nothing in 24h where "Trump approval rating" found 30), so a
-    # broader first-three-words search rides along.
-    broad = " ".join(topic.split()[:3])
-    if broad != topic:
-        queries.append(broad)
-    quoted = list(dict.fromkeys(q for t in titles for q in re.findall(r'"([^"]+)"', t)))
-    entity = next((w for w in common if w[0].isupper()), common[0] if common else "")
-    for i in range(0, min(len(quoted), 24), 8):
-        batch = " OR ".join(f'"{q}"' for q in quoted[i:i + 8])
-        queries.append(f"{entity} ({batch})".strip())
-    return queries[:4]
 
 
 def captured(root: Path, days: list[str]) -> set[str]:

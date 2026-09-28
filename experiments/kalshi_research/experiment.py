@@ -292,13 +292,19 @@ class KalshiResearchExperiment:
             "  - The query text is ignored except for the ticker, which MUST "
             "appear as \"(TICKER)\" -- e.g. f\"... {market.title} "
             "({market.ticker})?\". Without it the call fails.",
-            "  - It only understands game-winner markets in RESEARCH_SERIES "
-            "(experiments/kalshi_research/candidates/roster_news_favourite.py). "
-            "Research on any other market fails and the market is deferred.",
+            "  - It understands two kinds of market. GAME-winner markets in "
+            "RESEARCH_SERIES (experiments/kalshi_research/candidates/"
+            "roster_news_favourite.py), and POLITICAL markets in markets.POLITICS "
+            "(since 2026-09-28). Research on any other market fails and the "
+            "market is deferred. Never research a game after kickoff: check "
+            "markets.game_started.",
             "  - The reply is exactly two lines: \"VERDICT: <token>\" and "
-            "\"EVIDENCE: <cited headlines>\". The token is THIS_SIDE (news hurts "
-            "the side this market names), OTHER_SIDE (hurts the opponent), BOTH, "
-            "or NONE. Parse it with types.parse_verdict; never match team names.",
+            "\"EVIDENCE: <cited headlines>\". For a game the token is THIS_SIDE "
+            "(news hurts the side this market names), OTHER_SIDE (hurts the "
+            "opponent), BOTH, or NONE. For politics it is HAPPENED (a report "
+            "says the thing asked already occurred), RULED_OUT, CONFLICT or NONE "
+            "-- see candidates/politics_already_happened.py. Parse it with "
+            "types.parse_verdict; never match team names.",
             "  - The answer depends only on the market, so every candidate "
             "asking about the same market shares one call. Candidates differ in "
             "WHICH markets they research and HOW a token maps to a probability "

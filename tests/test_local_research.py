@@ -285,3 +285,180 @@ def test_only_short_dated_political_events_are_captured():
              "series_ticker": "KXDIMAYORGAME", "title": "Millonarios wins",
              "close_time": now + timedelta(days=1)}]
     assert list(capture.politics(pd.DataFrame(rows), now)) == ["KXTRUMPAPPROVE-26SEP28"]
+
+
+# ------------------------------------------------------------- kickoff gate
+
+def test_game_start_comes_from_the_ticker_or_close_minus_48h():
+    from experiments.kalshi_research import markets
+    close = datetime(2026, 9, 29, 2, 0, tzinfo=UTC)
+    assert markets.game_start("KXMLBGAME-26SEP261910CWSCHC", close) == datetime(
+        2026, 9, 26, 23, 10, tzinfo=UTC)                        # the ticker wins
+    assert markets.game_start("KXNCAAFGAME-26SEP26OKSTWVU", close) == close - timedelta(hours=48)
+
+
+def test_research_stops_before_kickoff_not_at_it():
+    from experiments.kalshi_research import markets
+    start = datetime(2026, 9, 26, 23, 10, tzinfo=UTC)
+    ev, close = "KXMLBGAME-26SEP261910CWSCHC", start + timedelta(days=3)
+    assert not markets.game_started(ev, close, start - timedelta(minutes=16))
+    assert markets.game_started(ev, close, start - timedelta(minutes=14))
+    assert markets.game_started(ev, close, start + timedelta(hours=2))
+
+
+@pytest.mark.parametrize("module", ["local_news_favourite", "bidirectional_news_shift"])
+def test_sports_candidates_do_not_research_a_started_game(module):
+    import importlib
+    mod = importlib.import_module(f"experiments.kalshi_research.candidates.{module}")
+    m = _market_snapshot()
+    in_game = datetime(2026, 9, 26, 23, 30, tzinfo=UTC)        # 20 min after first pitch
+    ctx = ResearchContext(now=in_game, researcher=StubResearcher(default="VERDICT: THIS_SIDE"))
+    assert mod.forecast(m, ctx) == m.implied_prob and ctx.calls == 0
+
+
+def test_the_underdog_mirror_does_not_research_a_started_game():
+    from experiments.kalshi_research.candidates import underdog_mirror_shift as ums
+    snap = _snap()
+    fav, dog = (MarketSnapshot(**{f: r[f] for f in MarketSnapshot.__dataclass_fields__ if f in r})
+                for _, r in snap.iterrows())
+    stub = StubResearcher(default="VERDICT: THIS_SIDE")
+    before = ResearchContext(now=NOW, researcher=stub, siblings=[fav])
+    assert ums.forecast(dog, before) > dog.implied_prob     # the gate is what stops it below
+    after = ResearchContext(now=datetime(2026, 9, 26, 23, 30, tzinfo=UTC), researcher=stub,
+                            siblings=[fav])
+    assert ums.forecast(dog, after) == dog.implied_prob and after.calls == 0
+
+
+# ------------------------------------------------------------- politics research
+
+POL_EVENT = "KXTRUMPSAY-26SEP28"
+
+
+def _pol_snap() -> pd.DataFrame:
+    base = _snap().iloc[0].to_dict()
+    base.update(event_ticker=POL_EVENT, series_ticker="KXTRUMPSAY",
+                close_time=NOW + timedelta(hours=20), yes_bid=0.33, yes_ask=0.36)
+    return pd.DataFrame([{**base, "ticker": f"{POL_EVENT}-{w.upper().replace(' ', '')}",
+                          "title": f'Will Trump say "{w}" before Sep 28, 2026?'}
+                         for w in ("Voter ID", "Moon", "Nobel")])
+
+
+def _pol_bundle(items: int = 1) -> dict[str, Any]:
+    return {"id": f"{POL_EVENT}@x", "asked_at": NOW.isoformat(), "state": "EVIDENCE_AVAILABLE",
+            "errors": [], "items": [
+                {"id": f"S{i + 1}", "published": "2026-09-26T15:00:00+00:00",
+                 "publisher": "AP", "headline": f"Trump rally remarks {i}"} for i in range(items)]}
+
+
+@pytest.fixture
+def pol_researcher(monkeypatch, tmp_path):
+    monkeypatch.setattr(lr, "model_digest", lambda: "abc123")
+    r = lr.LocalResearcher(evidence_root=tmp_path)
+    r.bind(_pol_snap())
+    return r
+
+
+def _q(word: str) -> str:
+    return f"Has this already happened: say {word} ({POL_EVENT}-{word.upper().replace(' ', '')})?"
+
+
+def test_a_political_event_is_searched_and_screened_once(pol_researcher, monkeypatch):
+    from experiments.kalshi_research.researcher import BudgetedResearcher
+    n = {"search": 0, "screen": 0}
+
+    def search(*a, **k):
+        n["search"] += 1
+        return _pol_bundle()
+
+    def screen(*a, **k):
+        n["screen"] += 1
+        return []
+    monkeypatch.setattr(lr, "retrieve_topic", search)
+    monkeypatch.setattr(lr, "politics_screen", screen)
+    monkeypatch.setattr(lr, "retrieve", lambda m: pytest.fail("the game path was used"))
+    b = BudgetedResearcher(pol_researcher, budget=1)
+    answers = [b.research(_q(w)) for w in ("Voter ID", "Moon", "Nobel")]
+    assert n == {"search": 1, "screen": 1}
+    assert all(a.text.startswith("VERDICT: NONE") and not a.error for a in answers)
+    assert b.used == 1 and b.refused == 0       # siblings of an empty screen are free
+
+
+def test_a_screened_item_goes_to_the_judge_per_market(pol_researcher, monkeypatch):
+    monkeypatch.setattr(lr, "retrieve_topic", lambda *a, **k: _pol_bundle())
+    monkeypatch.setattr(lr, "politics_screen", lambda *a, **k: ["S1"])
+    asked = []
+
+    def judge(title, close, now, bundle, keep):
+        asked.append(title)
+        return ("HAPPENED" if "Voter ID" in title else "NONE"), ["S1"], "said it"
+    monkeypatch.setattr(lr, "politics_judge", judge)
+    yes, no = pol_researcher.research(_q("Voter ID")), pol_researcher.research(_q("Moon"))
+    assert yes.text.startswith("VERDICT: HAPPENED") and "Trump rally remarks" in yes.text
+    assert no.text.startswith("VERDICT: NONE") and len(asked) == 2
+    assert not pol_researcher.is_cached(_q("Nobel"))   # a live screen costs a judge call
+
+
+def test_a_failed_political_search_is_an_error_never_none(pol_researcher, monkeypatch):
+    monkeypatch.setattr(lr, "retrieve_topic", lambda *a, **k: {
+        **_pol_bundle(0), "state": "SEARCH_FAILED", "errors": ["SEARCH_FAILED q: URLError"]})
+    r = pol_researcher.research(_q("Moon"))
+    assert r.error.startswith("local: SEARCH_FAILED") and r.text == ""
+
+
+@pytest.mark.parametrize(("happened", "ruled_out", "token"), [
+    (False, False, "NONE"), (True, False, "HAPPENED"),
+    (False, True, "RULED_OUT"), (True, True, "CONFLICT")])
+def test_the_politics_judge_maps_to_tokens(monkeypatch, happened, ruled_out, token):
+    def chat(*a, **k):
+        return {"happened": {"value": happened, "source_ids": ["S1"] if happened else []},
+                "ruled_out": {"value": ruled_out, "source_ids": ["S1"] if ruled_out else []},
+                "reason": ""}
+    monkeypatch.setattr(lr, "_chat", chat)
+    got, _, _ = lr.politics_judge("q", NOW, NOW, _pol_bundle(), ["S1"])
+    assert got == token
+
+
+def test_a_politics_citation_to_an_item_not_shown_is_rejected(monkeypatch):
+    monkeypatch.setattr(lr, "_chat", lambda *a, **k: {
+        "happened": {"value": True, "source_ids": ["S2"]},
+        "ruled_out": {"value": False, "source_ids": []}, "reason": ""})
+    with pytest.raises(lr.ModelFailure, match="INVALID_CITATION"):
+        lr.politics_judge("q", NOW, NOW, _pol_bundle(2), ["S1"])
+
+
+# ------------------------------------------------------------- politics candidate
+
+def _pol_market(title: str = 'Will Trump say "Voter ID" before Sep 28, 2026?',
+                hours: float = 20.0, bid: float = 0.33, ask: float = 0.36) -> MarketSnapshot:
+    r = {**_pol_snap().iloc[0].to_dict(), "title": title, "yes_bid": bid, "yes_ask": ask,
+         "close_time": NOW + timedelta(hours=hours)}
+    return MarketSnapshot(**{f: r[f] for f in MarketSnapshot.__dataclass_fields__ if f in r})
+
+
+@pytest.mark.parametrize(("token", "expect"), [
+    ("HAPPENED", lambda p: p + (1 - p) / 2), ("RULED_OUT", lambda p: p / 2),
+    ("NONE", lambda p: p), ("CONFLICT", lambda p: p)])
+def test_the_politics_candidate_maps_the_verdict(token, expect):
+    from experiments.kalshi_research.candidates import politics_already_happened as pah
+    m = _pol_market()
+    ctx = ResearchContext(now=NOW, researcher=StubResearcher(default=f"VERDICT: {token}"))
+    assert pah.forecast(m, ctx) == pytest.approx(expect(m.implied_prob)) and ctx.calls == 1
+
+
+@pytest.mark.parametrize("m", [
+    _pol_market(hours=60),                                           # too early: one shot only
+    _pol_market(title="Will there be at least 7 presidential actions in the week?"),
+    _pol_market(title="Will Trump's RCP approval average be below 38.4 on Sep 28?"),
+    _pol_market(bid=0.93, ask=0.95),                                 # no room left
+    _pol_market(bid=0.30, ask=0.40),                                 # spread too wide
+])
+def test_the_politics_candidate_skips_what_news_cannot_settle(m):
+    from experiments.kalshi_research.candidates import politics_already_happened as pah
+    ctx = ResearchContext(now=NOW, researcher=StubResearcher(default="VERDICT: HAPPENED"))
+    assert pah.forecast(m, ctx) == m.implied_prob and ctx.calls == 0
+
+
+def test_sports_candidates_never_research_politics():
+    m = _pol_market()
+    ctx = ResearchContext(now=NOW, researcher=StubResearcher(default="VERDICT: THIS_SIDE"))
+    assert lnf.forecast(m, ctx) == m.implied_prob and ctx.calls == 0

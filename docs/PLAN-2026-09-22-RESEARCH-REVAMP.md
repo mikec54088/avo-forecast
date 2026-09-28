@@ -586,3 +586,36 @@ A politics judge, and candidates for these markets, come after evidence
 accumulates. Several of these markets are COUNTS or AVERAGES whose best
 evidence is a public tracker rather than news -- worth noticing before
 building a news judge for them.
+
+### Kickoff gate and a politics candidate (2026-09-28, human decisions)
+
+**No research after kickoff.** Measured first: over 09-26..28, ~25% of the
+live candidates' research calls on timed tickers ran after the game started,
+a median 1.8h in (84 calls, 3 of them moved the price). `markets.game_start`
+is the ticker's time, or close - 48h for a date-only ticker: every timed
+research series closes exactly 48h after the start (72h MLB; 413 events, no
+exceptions), and on the date-only series the live-trading volume spike lands
+46-47h before close. `local_news_favourite`, `bidirectional_news_shift` and
+`underdog_mirror_shift` now stop 15 min before the start (a pass is logged at
+its start instant but researches for 2-8 min). Changed IN PLACE, not under
+fresh identities: the records are 1-2 days old and the pre-change in-game
+forecasts are identifiable exactly by the same function, so compare like with
+like by filtering on `markets.game_started`.
+
+**Politics research.** `politics_already_happened` (founder, created
+2026-09-28) asks one question of yes/no political event markets in their
+final 48h: does a report <= 24h old say the thing already HAPPENED, or was
+RULED_OUT? HAPPENED moves halfway to 1, RULED_OUT halves. Ladders, counts and
+polling averages are excluded by title -- trackers settle those, not
+headlines. The local engine has a separate politics path
+(`local_research.politics_screen` / `politics_judge`, judge `politics-v1`;
+the sports path and PIPELINE_VERSION are untouched): one search and one screen
+per EVENT, and when the screen finds nothing every market of the event is
+answered free, so a 20-market "say" event costs one of the 12 calls per pass.
+
+Expect it to be SLOW. ~23 markets a week pass its gates (16 at 24h, 69 at
+120h; the runner allows one research per market, hence the late window), two
+thirds of them "Trump say" markets, and headlines rarely quote the exact word.
+A live dry run on 9 markets (5 calls) returned NONE on all, correctly: the
+meeting news was about people no market asked about. Read its first dozen
+resolved decisions by hand.

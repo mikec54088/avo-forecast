@@ -80,6 +80,13 @@ the "zero extra cost" framing above would need to be retracted.
 Cannot be backtested: replaying an old game against today's web returns the
 score. Every claim above is a hypothesis until the forecast log says
 otherwise.
+
+NOT AFTER KICKOFF (added 2026-09-28, human decision). Research stops 15
+minutes before the game starts (markets.game_started). Before this, ~25% of
+research calls on timed tickers ran after the start, a median 1.8h in --
+reading live blogs and scores the quote it is scored against may not carry.
+Forecasts logged before 2026-09-28 include those; filter on
+markets.game_started to compare like with like.
 """
 from __future__ import annotations
 
@@ -89,6 +96,7 @@ from experiments.kalshi_research.candidates.roster_news_favourite import (
     SPREAD_TOL,
     wants_research,
 )
+from experiments.kalshi_research.markets import game_started
 from experiments.kalshi_research.types import ResearchContext, parse_verdict
 
 MANIFEST = {
@@ -134,6 +142,8 @@ def forecast(market: MarketSnapshot, context: ResearchContext) -> float:
         return p
     fav = sibling_favourite(market, context)
     if fav is None:
+        return p
+    if game_started(market.event_ticker, market.close_time, context.now):
         return p
     verdict, _ = parse_verdict(context.research(
         f"Has anything dated today changed the expected outcome of this event: "
