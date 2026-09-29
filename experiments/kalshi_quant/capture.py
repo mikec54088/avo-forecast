@@ -277,7 +277,15 @@ def snapshot(
         with KalshiClient() as client:
             walk = (
                 _iter_series_pages(client, universe, SERIES_MAX_PAGES) if by_series
-                else client.iter_market_pages(status="open", max_close_ts=max_close_ts)
+                # Parlays excluded server-side. On 2026-09-28 they grew to fill
+                # the 24h window -- 5k markets on 09-25, 124k by 16:30 UTC 09-28,
+                # past the 200k page cap by 18:31 -- all ahead of the real
+                # markets in page order, so the near pass saved 0-30 quotable
+                # markets a tick instead of ~2,000. Of 604,709 parlays measured
+                # on 2026-08-24, 74 had a book (0.01%); every consumer already
+                # filters is_mve out. Keeping them flagged cost the whole pass.
+                else client.iter_market_pages(status="open", max_close_ts=max_close_ts,
+                                              mve_filter="exclude")
             )
             for markets, fetched_at in walk:
                 pages += 1

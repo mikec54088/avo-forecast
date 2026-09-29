@@ -153,6 +153,7 @@ class KalshiClient:
         status: str = "open",
         limit: int = MAX_PAGE_LIMIT,
         max_close_ts: int | None = None,
+        mve_filter: str | None = None,
     ) -> Iterator[tuple[list[dict[str, Any]], datetime]]:
         """Yield (markets, fetched_at) per page.
 
@@ -167,12 +168,17 @@ class KalshiClient:
         silently IGNORED on status=settled, and unknown parameters are ignored
         rather than rejected, so never assume a filter works without checking
         the response.
+
+        `mve_filter="exclude"` drops multivariate parlay combos server-side.
+        VERIFIED 2026-09-29: a +24h window's first page was 1,000
+        KXMVECROSSCATEGORY parlays, 0 two-sided; with the filter it was real
+        markets (KXBTCD, KXSOLE, KXNATGASD ...), 467 two-sided.
         """
         cursor: str | None = None
         while True:
             page = self._get(
                 "/markets", status=status, limit=limit, cursor=cursor,
-                max_close_ts=max_close_ts,
+                max_close_ts=max_close_ts, mve_filter=mve_filter,
             )
             fetched_at = datetime.now(timezone.utc)
             markets = page.get("markets", [])
