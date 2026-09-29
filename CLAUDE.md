@@ -340,7 +340,16 @@ every research-series game at T-12h/T-3h/T-1h, retrieval only, into
 `--force` because research candidates need months to rank). Sonnet never
 answers research queries.
 
-### Potential direction: invert the scoring loop (not built)
+### The scoring loop is inverted (BUILT 2026-09-28)
+
+`core.loop.score_subsets` calls the optional `Experiment.score_many`, which
+kalshi_quant implements: each partition is read once and every candidate x
+both subsets is scored on it (`experiment._Tally`). Under the first-signal
+policy the per-candidate reload was ~2 min, twice per candidate, and
+dominated a rank. Verified before/after on three partitions, every candidate,
+all three subsets: identical scores. kalshi_research does not implement it and
+keeps the per-candidate path. The history below is why it was deferred.
+
 
 `avo rank` takes ~54 min because `score_all` loops candidates OUTER and each
 one re-reads the whole entries table -- 84 candidates x 2 subsets = 168 passes.

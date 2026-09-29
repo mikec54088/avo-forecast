@@ -267,6 +267,100 @@ def pnl_stats(by_series: dict[str, list[float]], n_considered: int) -> dict[str,
     }
 
 
+class _Tally:
+    """What scoring keeps for one (candidate, subset) across chunks: three
+    floats and a label per observation, plus fills grouped by series. Path
+    objects never outlive their chunk, so memory tracks the chunk size and the
+    number of tallies, not the dataset."""
+
+    def __init__(self) -> None:
+        self.obs: list[Observation] = []
+        self.series: list[str] = []
+        self.stale: list[float] = []
+        self.by_series_pnl: dict[str, list[float]] = {}
+        self.n_considered = 0
+        self.errors = 0
+        self.saw_any = False
+
+    def add(self, candidate: Candidate, loaded: Any, batch: Sequence[MarketPath],
+            history: SeriesHistory) -> None:
+        if batch:
+            self.saw_any = True
+        # INVARIANT #1: only truth that resolved strictly after this candidate
+        # existed. assert_clean afterwards is not redundant -- it is the
+        # tripwire that catches a future change to eligible().
+        keep = eligible(candidate, list(batch), lambda e: e.resolved_at)
+        assert_clean(candidate, keep, lambda e: e.resolved_at)
+        if not keep:
+            return
+        self.n_considered += len(keep)
+        scored: list[Entry] = []
+        forecasts: list[float] = []
+        for path in keep:
+            # ENTRY_POLICY: the candidate's first signal, walking forward. A
+            # raise or an out-of-range forecast anywhere on the walk (NaN
+            # included) makes the market an error, never a score.
+            try:
+                e, p = first_signal(path, loaded.forecast, history)
+            except Exception:  # noqa: BLE001 - a broken candidate must not kill the run
+                self.errors += 1
+                continue
+            self.obs.append(Observation(p, e.market.implied_prob, e.outcome))
+            self.series.append(e.market.series_ticker)
+            self.stale.append(e.staleness_minutes)
+            scored.append(e)
+            forecasts.append(p)
+        accumulate_fills(scored, forecasts, self.by_series_pnl)
+
+    def result(self, candidate_id: str, subset: str) -> Score:
+        nan = float("nan")
+        if not self.saw_any:
+            return Score(candidate_id, nan, (nan, nan), 0,
+                         notes=f"no observations in the {subset} subset")
+        if not self.n_considered:
+            return Score(candidate_id, nan, (nan, nan), 0,
+                         notes="no observations resolved after created_at")
+        if not self.obs:
+            return Score(candidate_id, nan, (nan, nan), 0,
+                         notes=f"no usable forecasts ({self.errors} errors)")
+        cand_brier, market_brier, skill = skill_score(self.obs)
+        # primary_ci is the SERIES-CLUSTERED interval: observations are not
+        # independent, and resampling them individually reported intervals 2.3x
+        # narrower than the data supports (40,726 observations, 571 series,
+        # top 20 series 54.8% of the set). The i.i.d. interval is kept as a
+        # diagnostic -- the ratio between them says whether an edge is
+        # broad-based or rests on a handful of series.
+        lo, hi = bootstrap_ci_clustered(self.obs, self.series)
+        ilo, ihi = bootstrap_ci(self.obs)
+        # Secondary, never selected on (INVARIANT #2). Selection sorts on
+        # `primary` alone; these exist so a skill number can be read honestly.
+        stale = sorted(self.stale)
+        trade = pnl_stats(self.by_series_pnl, n_considered=self.n_considered)
+        return Score(
+            candidate_id=candidate_id,
+            primary=skill,
+            primary_ci=(lo, hi),
+            n_observations=len(self.obs),
+            secondary={
+                "candidate_brier": cand_brier,
+                "market_brier": market_brier,
+                "forecast_errors": float(self.errors),
+                "staleness_median_min": _pct(stale, 0.50),
+                "staleness_p90_min": _pct(stale, 0.90),
+                "skill_ci_iid_lo": ilo,
+                "skill_ci_iid_hi": ihi,
+                "skill_ci_width_ratio": (
+                    (hi - lo) / (ihi - ilo) if (ihi - ilo) > 0 else float("nan")
+                ),
+                **trade,
+            },
+            notes=(
+                f"entry policy: {ENTRY_POLICY}; primary_ci is series-clustered; "
+                f"subset={subset}; {self.errors} errors"
+            ),
+        )
+
+
 class KalshiQuantExperiment:
     name = "kalshi_quant"
 
@@ -343,130 +437,55 @@ class KalshiQuantExperiment:
     ) -> Score:
         """Brier skill vs the market's implied probability (INVARIANT #2).
 
-        `entries` and `history` are injectable so a caller scoring many
-        candidates loads the observation set once. Both default to reading the
-        captured Parquet.
+        One candidate, one subset: score_many with a single pair, so there is
+        exactly one scoring implementation.
+        """
+        return self.score_many([(candidate, loaded)], entries=entries, history=history,
+                               subsets=(subset,), chunks=chunks)[subset][0]
+
+    def score_many(
+        self,
+        pairs: Sequence[tuple[Candidate, Any]],
+        entries: Any = None,
+        history: SeriesHistory | None = None,
+        subsets: Sequence[str] = ("all",),
+        chunks: Iterable[Sequence[MarketPath]] | None = None,
+    ) -> dict[str, list[Score]]:
+        """Every candidate x every subset in ONE pass over the data.
+
+        Chunks are the outer loop and candidates the inner one, so each
+        partition is read and rebuilt once instead of once per candidate per
+        subset -- under the first-signal policy that rebuild dominated a rank
+        (~2 min a candidate, twice each). Scores are identical to scoring one
+        candidate at a time: each (candidate, subset) keeps its own _Tally, and
+        a tally sees exactly the paths, in exactly the order, that a
+        single-candidate pass would.
+
+        `entries` may be a sequence of paths or a callable returning chunks
+        (what scoring_inputs hands core).
         """
         if chunks is None:
-            if entries is None:
-                entries = load_paths()
-            chunks = [entries]
+            if callable(entries):
+                chunks = entries()
+            else:
+                chunks = [entries if entries is not None else load_paths()]
         if history is None:
             history = SeriesHistory.from_resolutions(read_resolutions(DATA_ROOT))
-
-        # `subset` splits by SERIES for selection honesty, not by market. The
-        # failure guarded against is a winner that only works on whichever
-        # series dominated the sample, and Kalshi's top 20 series are over half
-        # of all observations -- a random market-level split would leave the
-        # same series on both sides and test nothing.
-        want_conf = subset == "confirmation"
-
-        # Accumulated across chunks. These are all the scorer keeps: three
-        # floats and a label per observation, plus fills grouped by series.
-        # Entry objects never outlive their chunk, so peak memory is the chunk
-        # size rather than the dataset -- see entries_store.iter_paths.
-        obs: list[Observation] = []
-        series: list[str] = []
-        stale_vals: list[float] = []
-        by_series_pnl: dict[str, list[float]] = {}
-        n_considered = 0
-        errors = 0
-        saw_any = False
-
+        tallies = {(i, sub): _Tally() for i in range(len(pairs)) for sub in subsets}
         for chunk in chunks:
-            batch = chunk
-            if subset != "all":
-                batch = [e for e in batch
-                         if is_confirmation_group(e.market.series_ticker) == want_conf]
-            if batch:
-                saw_any = True
-            # INVARIANT #1: only truth that resolved strictly after this
-            # candidate existed. assert_clean afterwards is not redundant -- it
-            # is the tripwire that catches a future change to eligible().
-            keep = eligible(candidate, list(batch), lambda e: e.resolved_at)
-            assert_clean(candidate, keep, lambda e: e.resolved_at)
-            if not keep:
-                continue
-            n_considered += len(keep)
-
-            batch_scored: list[Entry] = []
-            batch_forecasts: list[float] = []
-            for path in keep:
-                # ENTRY_POLICY: the candidate's first signal, walking forward.
-                # A raise or an out-of-range forecast anywhere on the walk
-                # (NaN included) makes the market an error, never a score.
-                try:
-                    e, p = first_signal(path, loaded.forecast, history)
-                except Exception:  # noqa: BLE001 - a broken candidate must not kill the run
-                    errors += 1
-                    continue
-                obs.append(Observation(p, e.market.implied_prob, e.outcome))
-                series.append(e.market.series_ticker)
-                stale_vals.append(e.staleness_minutes)
-                batch_scored.append(e)
-                batch_forecasts.append(p)
-            accumulate_fills(batch_scored, batch_forecasts, by_series_pnl)
-
-        if not saw_any:
-            return Score(candidate.candidate_id, float("nan"),
-                         (float("nan"), float("nan")), 0,
-                         notes=f"no observations in the {subset} subset")
-        if not n_considered:
-            return Score(
-                candidate_id=candidate.candidate_id,
-                primary=float("nan"),
-                primary_ci=(float("nan"), float("nan")),
-                n_observations=0,
-                notes="no observations resolved after created_at",
-            )
-
-        if not obs:
-            return Score(
-                candidate_id=candidate.candidate_id,
-                primary=float("nan"),
-                primary_ci=(float("nan"), float("nan")),
-                n_observations=0,
-                notes=f"no usable forecasts ({errors} errors)",
-            )
-
-        cand_brier, market_brier, skill = skill_score(obs)
-
-        # primary_ci is the SERIES-CLUSTERED interval: observations are not
-        # independent, and resampling them individually reported intervals 2.3x
-        # narrower than the data supports (40,726 observations, 571 series,
-        # top 20 series 54.8% of the set). The i.i.d. interval is kept as a
-        # diagnostic -- the ratio between them says whether an edge is
-        # broad-based or rests on a handful of series.
-        lo, hi = bootstrap_ci_clustered(obs, series)
-        ilo, ihi = bootstrap_ci(obs)
-
-        # Secondary, never selected on (INVARIANT #2). Selection sorts on
-        # `primary` alone; these exist so a skill number can be read honestly.
-        stale = sorted(stale_vals)
-        trade = pnl_stats(by_series_pnl, n_considered=n_considered)
-        return Score(
-            candidate_id=candidate.candidate_id,
-            primary=skill,
-            primary_ci=(lo, hi),
-            n_observations=len(obs),
-            secondary={
-                "candidate_brier": cand_brier,
-                "market_brier": market_brier,
-                "forecast_errors": float(errors),
-                "staleness_median_min": _pct(stale, 0.50),
-                "staleness_p90_min": _pct(stale, 0.90),
-                "skill_ci_iid_lo": ilo,
-                "skill_ci_iid_hi": ihi,
-                "skill_ci_width_ratio": (
-                    (hi - lo) / (ihi - ilo) if (ihi - ilo) > 0 else float("nan")
-                ),
-                **trade,
-            },
-            notes=(
-                f"entry policy: {ENTRY_POLICY}; primary_ci is series-clustered; "
-                f"subset={subset}; {errors} errors"
-            ),
-        )
+            for sub in subsets:
+                # `subset` splits by SERIES for selection honesty, not by
+                # market: Kalshi's top 20 series are over half of all
+                # observations, so a market-level split would leave the same
+                # series on both sides and test nothing.
+                batch = chunk if sub == "all" else [
+                    p for p in chunk
+                    if is_confirmation_group(p.market.series_ticker) == (sub == "confirmation")]
+                for i, (cand, loaded) in enumerate(pairs):
+                    tallies[(i, sub)].add(cand, loaded, batch, history)
+        return {sub: [tallies[(i, sub)].result(cand.candidate_id, sub)
+                      for i, (cand, _) in enumerate(pairs)]
+                for sub in subsets}
 
     def seed_candidates(self) -> Sequence[Candidate]:
         pkg = importlib.import_module("experiments.kalshi_quant.candidates")

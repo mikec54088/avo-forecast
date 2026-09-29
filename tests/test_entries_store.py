@@ -188,7 +188,8 @@ def test_the_fill_rule_has_exactly_one_implementation():
     from experiments.kalshi_quant import experiment as ex
 
     assert "accumulate_fills" in inspect.getsource(ex.paper_trade)
-    assert "accumulate_fills" in inspect.getsource(ex.KalshiQuantExperiment.score)
+    assert "accumulate_fills" in inspect.getsource(ex._Tally.add)
+    assert "score_many" in inspect.getsource(ex.KalshiQuantExperiment.score)
     assert inspect.getsource(ex.accumulate_fills).count("simulate_fill") == 1
 
 

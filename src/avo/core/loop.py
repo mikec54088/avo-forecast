@@ -22,6 +22,7 @@ from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from avo.core.generate import generate_once, is_quota_exhausted
 from avo.core.memory import GenerationRecord, RunMemory
@@ -38,30 +39,48 @@ def score_all(
     subset: str = "all",
     only: Sequence[str] | None = None,
 ) -> list[Score]:
-    """Score every seed candidate, skipping ones that fail to load.
+    """Score every seed candidate on one subset (see score_subsets)."""
+    return score_subsets(experiment, entries, history, (subset,), only)[subset]
 
-    A candidate that will not import is a defect in that candidate, not a
-    reason to abandon the generation.
+
+def score_subsets(
+    experiment: Any,
+    entries: Any = None,
+    history: Any = None,
+    subsets: Sequence[str] = ("all",),
+    only: Sequence[str] | None = None,
+) -> dict[str, list[Score]]:
+    """Score every seed candidate on every subset, skipping ones that fail to
+    load -- a candidate that will not import is a defect in that candidate,
+    not a reason to abandon the generation.
+
+    If the experiment implements the optional `score_many`, everything is
+    scored in ONE pass over its data; otherwise each candidate x subset gets
+    its own `score` call. Core stays ignorant of what a chunk is either way.
     """
-    out: list[Score] = []
+    pairs = []
     for c in experiment.seed_candidates():
         if only is not None and c.candidate_id not in only:
             continue
         try:
-            loaded = experiment.load_candidate(c)
+            pairs.append((c, experiment.load_candidate(c)))
         except Exception as exc:  # noqa: BLE001
             print(f"  skip {c.candidate_id}: {exc!r}", flush=True)
-            continue
-        # `entries` may be a callable returning a fresh chunk iterator. An
-        # iterator itself cannot be reused across 42 candidates -- it is
-        # exhausted after the first -- so the caller passes a factory and each
-        # candidate gets its own pass. Core stays ignorant of what a chunk is.
-        if callable(entries):
-            out.append(experiment.score(c, loaded, chunks=entries(),
-                                        history=history, subset=subset))
-        else:
-            out.append(experiment.score(c, loaded, entries=entries,
-                                        history=history, subset=subset))
+    many = getattr(experiment, "score_many", None)
+    if many is not None:
+        return dict(many(pairs, entries=entries, history=history, subsets=tuple(subsets)))
+    out: dict[str, list[Score]] = {s: [] for s in subsets}
+    for s in subsets:
+        for c, loaded in pairs:
+            # `entries` may be a callable returning a fresh chunk iterator. An
+            # iterator cannot be reused across candidates -- it is exhausted
+            # after the first -- so each call gets its own.
+            if callable(entries):
+                out[s].append(experiment.score(c, loaded, chunks=entries(),
+                                               history=history, subset=s))
+            else:
+                out[s].append(experiment.score(c, loaded, entries=entries,
+                                               history=history, subset=s))
     return out
 
 
@@ -75,9 +94,9 @@ def rank_and_confirm(
     that ranked well on selection fails to hold up -- which is the rate at
     which the loop would fool itself if the guard were absent.
     """
-    sel = score_all(experiment, entries, history, subset="selection")
-    conf = {s.candidate_id: s
-            for s in score_all(experiment, entries, history, subset="confirmation")}
+    both = score_subsets(experiment, entries, history, ("selection", "confirmation"))
+    sel = both["selection"]
+    conf = {s.candidate_id: s for s in both["confirmation"]}
     verdicts = [confirm(s, conf[s.candidate_id], gate=gate)
                 for s in sel if s.candidate_id in conf]
     verdicts.sort(key=lambda v: -v.selection.primary)

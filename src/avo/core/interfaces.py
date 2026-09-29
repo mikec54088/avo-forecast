@@ -26,6 +26,12 @@ class Experiment(Protocol):
         """Evaluate. MUST respect avo.core.holdout for anything time-based."""
         ...
 
+    # OPTIONAL: score_many(pairs, entries=, history=, subsets=) ->
+    #   {subset: [Score, ...]} in pair order. When present, core.loop scores
+    #   every (candidate, loaded) pair on every subset in one pass over the
+    #   experiment's data instead of one pass per candidate per subset. It
+    #   must return exactly what per-candidate `score` calls would.
+
     def scoring_inputs(self) -> tuple[Any, Any]:
         """(entries, history) to pass to score() for a whole ranking pass.
 
