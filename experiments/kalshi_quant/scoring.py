@@ -78,11 +78,26 @@ def bootstrap_ci(
     a bare point estimate is how you fool yourself into seeing a discovery."""
     if len(obs) < 2:
         return (float("nan"), float("nan"))
-    rng = random.Random(seed)
-    draws = [skill_score([obs[rng.randrange(len(obs))] for _ in obs])[2] for _ in range(n)]
-    draws = sorted(d for d in draws if d == d)
+    # Vectorised (2026-09-28). The pure-Python loop rescored every resample,
+    # O(n_obs x n) interpreted -- ~3 min a call at the 380k observations the
+    # first-signal pool gives a candidate, ~6 h of a full rank, for a
+    # DIAGNOSTIC interval nothing selects on. Same estimator: skill is
+    # 1 - sum(cb)/sum(mb) over the resample. numpy's generator draws a
+    # different sequence than random.Random, so the interval moved by Monte
+    # Carlo noise when this landed; it is still seeded and deterministic.
+    import numpy as np
+    cb = np.fromiter((brier(o.forecast, o.outcome) for o in obs), float, len(obs))
+    mb = np.fromiter((brier(o.market_prob, o.outcome) for o in obs), float, len(obs))
+    rng = np.random.default_rng(seed)
+    draws = []
+    for _ in range(n):
+        idx = rng.integers(0, len(obs), size=len(obs))
+        m = mb[idx].sum()
+        if m != 0:
+            draws.append(float(1.0 - cb[idx].sum() / m))
     if not draws:
         return (float("nan"), float("nan"))
+    draws.sort()
     return draws[int(alpha / 2 * len(draws))], draws[int((1 - alpha / 2) * len(draws)) - 1]
 
 

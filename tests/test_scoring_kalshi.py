@@ -19,4 +19,8 @@ def test_worse_than_market_is_negative():
 def test_ci_brackets_point_estimate():
     obs = [Observation(0.6, 0.5, 1)] * 40 + [Observation(0.4, 0.5, 0)] * 40
     lo, hi = bootstrap_ci(obs, n=200)
-    assert lo <= skill_score(obs)[2] <= hi
+    # 1e-12: every resample here has the same skill as the whole, and numpy
+    # sums in a different order than skill_score's Python sum, so the two
+    # differ in the 16th digit. Bracketing, not bit-equality, is the claim.
+    s = skill_score(obs)[2]
+    assert lo - 1e-12 <= s <= hi + 1e-12
