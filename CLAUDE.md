@@ -348,7 +348,9 @@ both subsets is scored on it (`experiment._Tally`). Under the first-signal
 policy the per-candidate reload was ~2 min, twice per candidate, and
 dominated a rank. Verified before/after on three partitions, every candidate,
 all three subsets: identical scores. kalshi_research does not implement it and
-keeps the per-candidate path. The history below is why it was deferred.
+keeps the per-candidate path. Measured 2026-09-29 with the i.i.d. bootstrap also vectorised:
+a full rank of 52 candidates over 508,901 markets takes 21 min, 7.3 GB peak
+(it was heading for ~40 h). The history below is why it was deferred.
 
 
 `avo rank` takes ~54 min because `score_all` loops candidates OUTER and each

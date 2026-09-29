@@ -417,3 +417,11 @@ def test_the_alarm_fires_when_the_replay_cannot_fill_what_paper_traded(data_root
     (c,) = paper_check.check(rows, paths, e,
                              SeriesHistory.from_resolutions(read_resolutions(data_root)))
     assert "could not fill" in c.alarm
+
+
+def test_avo_rank_can_find_the_promotion_hook():
+    """cli._rank looks the hook up ON THE EXPERIMENT. The first version defined
+    it only as a module function, so the first real rank promoted nothing and
+    wrote no file -- silently."""
+    from avo.core import registry
+    assert callable(getattr(registry.load("kalshi_quant"), "promote_to_paper", None))

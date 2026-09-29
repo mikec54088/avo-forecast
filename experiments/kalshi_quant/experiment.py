@@ -443,6 +443,10 @@ class KalshiQuantExperiment:
         return self.score_many([(candidate, loaded)], entries=entries, history=history,
                                subsets=(subset,), chunks=chunks)[subset][0]
 
+    def promote_to_paper(self, verdicts: Sequence[Any]) -> list[str]:
+        """Called by `avo rank` after confirmation (see module function)."""
+        return promote_to_paper(verdicts)
+
     def score_many(
         self,
         pairs: Sequence[tuple[Candidate, Any]],
