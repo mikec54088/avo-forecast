@@ -69,11 +69,10 @@ Phase 6 (the supervisor) is still deliberately unbuilt, and so is `PriorsStore`
 — cross-run priors tuned against two runs would be heuristics fitted to
 imagination.
 
-**NIGHTLY QUANT GENERATION IS PAUSED (2026-09-28)** while every candidate is
-re-scored under the new entry policy. Resume with
-`launchctl load ~/Library/LaunchAgents/com.avoforecast.kalshi-evolve.plist`
-once `avo rank kalshi_quant` has been read under it. Research generation is
-unaffected.
+**NIGHTLY QUANT GENERATION RESUMED (2026-09-29)** after being paused 2026-09-28
+while every candidate was re-scored under the first-signal entry policy
+(`data/rank-2026-09-29-first-signal.log`). `com.avoforecast.kalshi-evolve` is
+loaded again. Research generation was never affected.
 
 ### How we stop going in circles (2026-09-28, human-approved)
 
