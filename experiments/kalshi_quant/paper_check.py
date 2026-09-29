@@ -37,6 +37,11 @@ from experiments.kalshi_quant.observations import acts, first_signal
 
 MIN_TRADES = 30            # below this neither interval means anything
 MIN_DECISION_MATCH = 0.5   # share of paper trades the replay entered identically
+# Paper and the replay share one decision rule only from this commit (ab265b0).
+# Earlier paper trades were decided under other rules -- near pass only before
+# 2026-09-24, no siblings or cross-midnight history before this -- so their
+# ENTRY instants legitimately differ; their MONEY is still comparable.
+PARITY_SINCE = pd.Timestamp("2026-09-29T03:37:00Z")
 
 
 @dataclass(frozen=True)
@@ -72,7 +77,7 @@ def check(paper: pd.DataFrame, paths: dict, exp, history) -> list[Check]:
         mod = exp.load_candidate(by_id[cid])
         p_series: dict[str, list[float]] = {}
         r_series: dict[str, list[float]] = {}
-        matched = same = 0
+        matched = same = since = 0
         for r in g.itertuples(index=False):
             path = paths.get(r.ticker)
             if path is None:
@@ -86,12 +91,16 @@ def check(paper: pd.DataFrame, paths: dict, exp, history) -> list[Check]:
             p_series.setdefault(r.series_ticker, []).append(float(r.pnl_per_contract))
             if acts(f, e.market.implied_prob):
                 accumulate_fills([e], [f], r_series)
-                same += pd.Timestamp(e.market.observed_at) == pd.Timestamp(r.observed_at)
+            decided = getattr(r, "decided_at", None)
+            if decided is None or pd.Timestamp(decided) >= PARITY_SINCE:
+                since += 1
+                same += (acts(f, e.market.implied_prob) and
+                         pd.Timestamp(e.market.observed_at) == pd.Timestamp(r.observed_at))
         pi, ri = _interval(p_series), _interval(r_series)
-        rate = same / matched if matched else float("nan")
+        rate = same / since if since else float("nan")
         alarm = ""
         if matched >= MIN_TRADES:
-            if rate < MIN_DECISION_MATCH:
+            if since >= MIN_TRADES and rate < MIN_DECISION_MATCH:
                 alarm = f"replay entered at paper's quote on only {rate:.0%} of trades"
             elif not r_series:
                 alarm = "the replay could not fill any of the markets paper traded"
@@ -116,8 +125,10 @@ def main() -> None:
     paths = {p.ticker: p for chunk in entries_store.iter_paths() for p in chunk
              if p.ticker in want}
     for c in check(trades, paths, exp, history):
+        rate = "n/a" if c.decision_match != c.decision_match else f"{c.decision_match:.0%}"
         print(f"[paper-check] {c.candidate_id}: {c.n_paper} paper trades, "
-              f"{c.n_matched_markets} in the replay, same entry {c.decision_match:.0%}; "
+              f"{c.n_matched_markets} in the replay, same entry {rate} "
+              f"(trades since {PARITY_SINCE:%Y-%m-%d}); "
               f"paper {c.paper[0]:+.4f} [{c.paper[1]:+.4f},{c.paper[2]:+.4f}]  "
               f"replay {c.replay[0]:+.4f} [{c.replay[1]:+.4f},{c.replay[2]:+.4f}]")
         if c.alarm:
