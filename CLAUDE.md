@@ -258,6 +258,22 @@ Read this before proposing anything; most obvious ideas are already dead.
   replay number in this file dated before 2026-09-28 -- gate passers, family
   verdicts, parent choices, the unclimbed_favourite decision -- was measured
   under the leak. Treat them as hints until re-measured.
+- **Re-measured under the honest policy, 2026-09-28: NOTHING MAKES MONEY.**
+  Pool 508,901 markets (was 184,610). Every key candidate LOSES on both
+  halves, P&L/contract selection / confirmation:
+
+      unclimbed_favourite    -0.0255 / -0.0313   (was the both-halves passer)
+      unmarked_favourite     -0.0148 / -0.0273   (was the other one)
+      ladder_leader          -0.0284 / +0.0024   (was the parent-sort leader)
+      tick_grid_conditioned  -0.0141 / -0.0193
+      neglected_leg          -0.0159 / -0.0255
+      favourite_longshot     -0.0236 / -0.0231
+      baseline_sharpened     -0.0270 / -0.0253
+      long_horizon_favourite -0.2520 / -0.2274   (gen 13, written 09-27)
+
+  Losses cluster at 1.5-3c: roughly the cost of trading a fairly priced
+  market. That is the honest baseline the next generation starts from. The
+  full rank of every candidate is in data/rank-2026-09-29-first-signal.log.
 
 ### The research track, measured 2026-09-20; paused 2026-09-22
 
