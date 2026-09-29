@@ -170,6 +170,11 @@ def _rank(args) -> None:
     print(f"\n{n}/{len(verdicts)} confirmed on held-out series (skill)")
     print(f"{g}/{len(verdicts)} pass the P&L gate on BOTH selection and "
           f"confirmation series")
+    promote = getattr(exp, "promote_to_paper", None)
+    if promote is not None:
+        chosen = promote(verdicts)
+        print(f"on paper next pass (the backtest screens, paper judges): "
+              f"{', '.join(chosen) or 'none'}")
 
 
 def _entries(args) -> None:

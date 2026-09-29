@@ -13,9 +13,11 @@ from __future__ import annotations
 from avo.core import registry
 from experiments.kalshi_quant.experiment import passes_pnl_gate
 from experiments.kalshi_quant.observations import (
+    DATA_ROOT,
     ENTRY_POLICY,
     SeriesHistory,
-    load_entries,
+    load_paths,
+    read_resolutions,
 )
 
 EXPECTED = {
@@ -28,10 +30,10 @@ EXPECTED = {
 
 def main() -> None:
     exp = registry.load("kalshi_quant")
-    entries = load_entries()
+    entries = load_paths()
     if not entries:
         raise SystemExit("no observations yet; need both snapshots and resolutions")
-    history = SeriesHistory(entries)
+    history = SeriesHistory.from_resolutions(read_resolutions(DATA_ROOT))
     print(f"{len(entries):,} observations   entry policy: {ENTRY_POLICY}")
     print(f"resolved {min(e.resolved_at for e in entries):%Y-%m-%d %H:%M} .. "
           f"{max(e.resolved_at for e in entries):%Y-%m-%d %H:%M} UTC")

@@ -38,6 +38,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from experiments.kalshi_quant.observations import acts
 from experiments.kalshi_quant.scoring import simulate_fill
 from experiments.kalshi_quant.types import MarketSnapshot
 
@@ -68,7 +69,7 @@ def row(candidate_id: str, m: MarketSnapshot, forecast: float,
     must not silently rewrite what it decided.
     """
     mid = m.implied_prob
-    acted = abs(forecast - mid) > 1e-12 and not error
+    acted = acts(forecast, mid) and not error
     side = ("yes" if forecast > mid else "no") if acted else ""
     fill = simulate_fill(m, side, desired_contracts) if acted else None
     return {

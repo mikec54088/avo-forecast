@@ -30,7 +30,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Sequence
 
-from experiments.kalshi_quant.observations import DATA_ROOT, Entry
+from experiments.kalshi_quant.observations import DATA_ROOT, ENTRY_POLICY, Entry, MarketPath
 from experiments.kalshi_quant.scoring import FEE_RATE, simulate_fill
 
 CACHE = DATA_ROOT / "digest.json"
@@ -67,10 +67,20 @@ class Digest:
     n_observations: int
 
     def to_json(self) -> str:
-        return json.dumps({"text": self.text, "n_observations": self.n_observations})
+        return json.dumps({"text": self.text, "n_observations": self.n_observations,
+                           "policy": ENTRY_POLICY})
 
 
-def build(entries: Sequence[Entry]) -> Digest:
+def _as_entries(items: Sequence[Entry | MarketPath]) -> list[Entry]:
+    """Describe each market at its FIRST decision quote -- an instant fixed in
+    advance. Until 2026-09-28 this described the last quote before resolution,
+    so every generating agent was shown statistics carrying the same hindsight
+    leak as the old ENTRY_POLICY, and was steered toward it."""
+    return [x.entry_at(0) if isinstance(x, MarketPath) else x for x in items]
+
+
+def build(items: Sequence[Entry | MarketPath]) -> Digest:
+    entries = _as_entries(items)
     n = len(entries)
     series = Counter(e.market.series_ticker for e in entries)
     mkt_brier = sum((e.market.implied_prob - e.outcome) ** 2 for e in entries) / n
@@ -162,7 +172,7 @@ def build(entries: Sequence[Entry]) -> Digest:
     return Digest("\n".join(L), n)
 
 
-def load_or_build(entries: Sequence[Entry] | None = None) -> Digest | None:
+def load_or_build(entries: Sequence[Entry | MarketPath] | None = None) -> Digest | None:
     """Cached digest, rebuilt when the observation count has moved materially.
 
     Run artifact, never committed (INVARIANT #5).
@@ -171,7 +181,9 @@ def load_or_build(entries: Sequence[Entry] | None = None) -> Digest | None:
     if CACHE.exists():
         try:
             d = json.loads(CACHE.read_text())
-            cached = Digest(d["text"], int(d["n_observations"]))
+            # A digest built under another entry policy describes other data.
+            if d.get("policy") == ENTRY_POLICY:
+                cached = Digest(d["text"], int(d["n_observations"]))
         except (OSError, ValueError, KeyError):
             cached = None
     if entries is None:

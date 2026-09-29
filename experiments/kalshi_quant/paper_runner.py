@@ -46,7 +46,7 @@ from __future__ import annotations
 import argparse
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Self
 
@@ -54,7 +54,14 @@ import pandas as pd
 
 from avo.core import registry
 from experiments.kalshi_quant import paper_log
-from experiments.kalshi_quant.observations import _row_to_snapshot
+from experiments.kalshi_quant.observations import (
+    SIBLING_TOLERANCE_MIN,
+    SeriesHistory,
+    _row_to_snapshot,
+    context_parts,
+    is_decision_quote,
+    read_resolutions,
+)
 from experiments.kalshi_quant.types import MarketSnapshot
 
 SNAPSHOT_ROOT = Path(__file__).resolve().parents[2] / "data" / "kalshi_quant" / "snapshots"
@@ -106,6 +113,20 @@ MAX_CONTRACTS_PER_EVENT = 100
 PAPER_CANDIDATES = ("unclimbed_favourite",)
 
 
+def paper_candidates() -> tuple[str, ...]:
+    """The whitelist plus whatever the latest `avo rank` promoted
+    (experiment.promote_to_paper). The backtest screens; paper judges."""
+    import json
+
+    from experiments.kalshi_quant.experiment import PAPER_AUTO
+    auto: list[str] = []
+    try:
+        auto = list(json.loads(PAPER_AUTO.read_text()).get("candidates", []))
+    except (OSError, ValueError):
+        pass
+    return tuple(dict.fromkeys([*PAPER_CANDIDATES, *auto]))
+
+
 class _Lock:
     def __init__(self, root: Path) -> None:
         self.path = root / ".paper.lock"
@@ -128,6 +149,23 @@ def latest_near_snapshot(root: Path = SNAPSHOT_ROOT) -> Path | None:
     import glob
     files = glob.glob(str(root / "date=*" / "*-near.parquet"))
     return Path(max(files, key=os.path.getmtime)) if files else None
+
+
+# MAX_PRICE_HISTORY quotes at the hourly cadence reach back a day; a little
+# more covers a missed sweep.
+HISTORY_HOURS = 30.0
+
+
+def _recent_frames(now: datetime, hours: float, root: Path = SNAPSHOT_ROOT) -> pd.DataFrame:
+    """Every snapshot row (near and full) written in the last `hours`."""
+    import glob
+    cutoff = now.timestamp() - hours * 3600
+    days = {(now - timedelta(days=k)).strftime("date=%Y-%m-%d") for k in range(3)}
+    files = [f for d in sorted(days) for f in sorted(glob.glob(str(root / d / "*.parquet")))
+             if os.path.getmtime(f) >= cutoff]
+    frames = [x for x in (pd.read_parquet(f) for f in files)
+              if not x.empty and "ticker" in x.columns]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
 def latest_full_snapshot(root: Path = SNAPSHOT_ROOT) -> Path | None:
@@ -173,6 +211,31 @@ def _history_index(df: pd.DataFrame,
     return out
 
 
+def _event_index(snapshot: pd.DataFrame, history_frame: pd.DataFrame
+                 ) -> tuple[dict[str, tuple[MarketSnapshot, ...]], dict[str, list[datetime]]]:
+    """Time-sorted quotes per event, the sibling source for context_parts.
+
+    Only the span a sibling lookup can reach: SIBLING_TOLERANCE_MIN before
+    the oldest quote in this pass. Every leg of the event counts, whether or
+    not it is itself tradable -- the same as the replay's event rows.
+    """
+    if snapshot.empty or "event_ticker" not in snapshot.columns:
+        return {}, {}
+    start = pd.to_datetime(snapshot["observed_at"], utc=True).min() - timedelta(
+        minutes=SIBLING_TOLERANCE_MIN)
+    events = set(snapshot["event_ticker"])
+    parts = [snapshot.drop(columns=["quote_source"], errors="ignore")]
+    if not history_frame.empty and "event_ticker" in history_frame.columns:
+        h = history_frame[history_frame["event_ticker"].isin(events)]
+        parts.append(h[pd.to_datetime(h["observed_at"], utc=True) >= start])
+    df = pd.concat(parts, ignore_index=True)
+    df = df[df["event_ticker"].isin(events)].drop_duplicates(["ticker", "observed_at"])
+    idx: dict[str, tuple[MarketSnapshot, ...]] = {}
+    for e, g in df.sort_values("observed_at").groupby("event_ticker", sort=False):
+        idx[str(e)] = tuple(_row_to_snapshot(r) for r in g.itertuples(index=False))
+    return idx, {e: [q.observed_at for q in v] for e, v in idx.items()}
+
+
 def _history_for(df: pd.DataFrame, ticker: str, before: datetime) -> list:
     """One market's path. Kept for callers that want a single lookup."""
     return [p for p in _history_index(df, {ticker}).get(ticker, [])
@@ -188,9 +251,8 @@ def run_pass(
     desired_contracts: int = 100,
     experiment: object = None,
     max_contracts_per_event: int = MAX_CONTRACTS_PER_EVENT,
+    history: SeriesHistory | None = None,
 ) -> tuple[Path | None, dict[str, int]]:
-    from experiments.kalshi_quant.types import ForecastContext
-
     now = now or datetime.now(timezone.utc)
     root = root or paper_log.DATA_ROOT
     exp = experiment or registry.load("kalshi_quant")
@@ -209,6 +271,10 @@ def run_pass(
     hidx = _history_index(
         history_frame,
         set(snapshot["ticker"]) if "ticker" in snapshot.columns else None)
+    htimes = {t: [p.observed_at for p in v] for t, v in hidx.items()}
+    ev_idx, ev_times = _event_index(snapshot, history_frame)
+    if history is None:
+        history = SeriesHistory.from_resolutions(read_resolutions(paper_log.DATA_ROOT))
 
     already = paper_log.decided(root)
     stats = {"markets": len(snapshot), "asked": 0, "acted": 0,
@@ -226,17 +292,21 @@ def run_pass(
 
     for r in snapshot.itertuples(index=False):
         m: MarketSnapshot = _row_to_snapshot(r)
-        if not m.has_two_sided_book:
+        # The replay's rule (observations.is_decision_quote), so a candidate is
+        # asked about exactly the quotes it is backtested on.
+        if not is_decision_quote(m):
             continue
-        hist = None
+        ctx = None
         for c, mod in loaded:
             if (c.candidate_id, m.ticker) in already:
                 stats["skipped_seen"] += 1
                 continue
-            if hist is None:
-                hist = [pt for pt in hidx.get(m.ticker, ())
-                        if pt.observed_at < m.observed_at]
-            ctx = ForecastContext(now=now, series_history={}, price_history=hist, siblings=[])
+            if ctx is None:
+                # The replay's context builder, so history and siblings match.
+                hist, sibs = context_parts(
+                    m, hidx.get(m.ticker, ()), htimes.get(m.ticker, []),
+                    ev_idx.get(m.event_ticker, ()), ev_times.get(m.event_ticker, []))
+                ctx = history.context(m, hist, sibs)
             err = ""
             try:
                 p = float(mod.forecast(m, ctx))
@@ -305,15 +375,16 @@ def main() -> None:
 
     with _Lock(paper_log.DATA_ROOT):
         started = datetime.now(timezone.utc)
-        import glob
-        day = Path(snap).parent
 
         # NEAR side: markets inside 24h, exactly as before.
         df = pd.read_parquet(snap)
         df["quote_source"] = "near"
-        hist_df = pd.concat(
-            [pd.read_parquet(f) for f in sorted(glob.glob(str(day / "*-near.parquet")))],
-            ignore_index=True)
+        # History from BOTH passes over the last HISTORY_HOURS, across the
+        # date partition. Until 2026-09-28 it read today's directory only, so
+        # just after 00:00 UTC a candidate saw almost no path here while the
+        # replay handed it a full day -- the two disagreed on every
+        # path-gated decision near midnight.
+        hist_df = _recent_frames(started, HISTORY_HOURS)
 
         # FULL side: markets beyond 24h, from the hourly sweep. Added strictly
         # as an EXTRA source -- every failure here degrades to the near-only
@@ -334,16 +405,7 @@ def main() -> None:
                     fdf = fdf[(fh > args.near_horizon_hours)
                               & (fh <= args.full_horizon_hours)].copy()
                     fdf["quote_source"] = "full"
-                    fday = Path(fsnap).parent
-                    fhist = pd.concat(
-                        [pd.read_parquet(f)
-                         for f in sorted(glob.glob(str(fday / "*.parquet")))
-                         if not f.endswith("-near.parquet")],
-                        ignore_index=True)
                     df = pd.concat([df, fdf], ignore_index=True)
-                    # One frame: a market beyond 24h never appears in a near
-                    # file, so the two histories cannot collide on a ticker.
-                    hist_df = pd.concat([hist_df, fhist], ignore_index=True)
                     full_note = (f"+{len(fdf)} markets "
                                  f"{args.near_horizon_hours:g}-"
                                  f"{args.full_horizon_hours:g}h "
@@ -351,7 +413,8 @@ def main() -> None:
                 except Exception as exc:  # noqa: BLE001
                     full_note = f"full pass unusable ({exc!r}); near only"
 
-        path, st = run_pass(df, hist_df, now=started, desired_contracts=args.contracts,
+        path, st = run_pass(df, hist_df, now=started, candidates=paper_candidates(),
+                            desired_contracts=args.contracts,
                             max_contracts_per_event=args.max_contracts_per_event)
         el = (datetime.now(timezone.utc) - started).total_seconds()
         print(f"[paper] {st['markets']} markets from {snap.name} ({age_min:.0f} min old), "

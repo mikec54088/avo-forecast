@@ -6,9 +6,11 @@ below it.
 from __future__ import annotations
 
 import importlib
+import json
 import pkgutil
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Sequence
 
 from avo.core.holdout import assert_clean, eligible
@@ -21,10 +23,15 @@ from avo.core.selection import (
 from avo.core.types import Candidate, Score
 from experiments.kalshi_quant import digest, entries_store
 from experiments.kalshi_quant.observations import (
+    DATA_ROOT,
     ENTRY_POLICY,
     Entry,
+    MarketPath,
     SeriesHistory,
-    load_entries,
+    acts,
+    first_signal,
+    load_paths,
+    read_resolutions,
 )
 from experiments.kalshi_quant.scoring import (
     Observation,
@@ -103,6 +110,36 @@ def pnl_strength(score: Score) -> float:
     return mean - 1.96 * se
 
 
+PAPER_AUTO = DATA_ROOT / "paper_auto.json"
+PAPER_AUTO_MAX = 5
+
+
+def promote_to_paper(verdicts: Sequence[Any], path: Path = PAPER_AUTO,
+                     top: int = PAPER_AUTO_MAX) -> list[str]:
+    """Put the strongest backtest passers on paper, automatically.
+
+    The backtest SCREENS; paper trading JUDGES. A candidate that passes the
+    P&L gate on BOTH selection and confirmation series is only a candidate for
+    a live test -- the backtest agreed with itself on hindsight for five weeks
+    before paper showed the edge was the leak. Ranked by the weaker of its two
+    lower bounds, top `top`. Rewritten on every rank, so a candidate that
+    stops passing leaves paper; its decisions already logged stay logged.
+    """
+    passers = [v for v in verdicts
+               if v.gate_selection and v.gate_confirmed and v.confirmation is not None]
+    passers.sort(key=lambda v: -min(pnl_strength(v.selection), pnl_strength(v.confirmation)))
+    chosen = [v.candidate_id for v in passers[:top]]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "ranked_at": datetime.now(UTC).isoformat(), "entry_policy": ENTRY_POLICY,
+        "candidates": chosen,
+        "lower_bounds": {v.candidate_id: [pnl_strength(v.selection),
+                                          pnl_strength(v.confirmation)]
+                         for v in passers[:top]},
+    }, indent=1))
+    return chosen
+
+
 def passes_pnl_gate(score: Score) -> tuple[bool, str]:
     """Would this candidate have made money, allowing for noise?
 
@@ -169,7 +206,7 @@ def accumulate_fills(entries: Sequence[Entry], forecasts: Sequence[float],
     """
     for e, p in zip(entries, forecasts, strict=True):
         mid = e.market.implied_prob
-        if abs(p - mid) <= edge:
+        if not acts(p, mid) or abs(p - mid) <= edge:
             continue
         side = "yes" if p > mid else "no"
         fill = simulate_fill(e.market, side, 100)
@@ -282,32 +319,27 @@ class KalshiQuantExperiment:
             if self._digest is None:
                 # The digest needs the whole set once; pay it here, not per
                 # candidate, and only when it is missing.
-                self._digest = digest.load_or_build(entries_store.load())
-            return (lambda: entries_store.iter_entries()), sh
+                self._digest = digest.load_or_build(entries_store.load() or [])
+            return (lambda: entries_store.iter_paths()), sh
 
-        entries = entries_store.load()
-        if entries is None:
-            # Cold or stale table. Falling back to the raw archive is correct
-            # but expensive -- 10.9 GB and 36 minutes against 2.8 GB and 10
-            # seconds -- so say which path was taken rather than being quietly
-            # slow. entries_store.load() returns None, never [], precisely so
-            # this branch cannot be confused with "there are no observations".
-            print("  entries table cold or stale; rebuilding from the raw "
-                  "archive (run `avo entries build` to materialise it)", flush=True)
-            entries = load_entries()
-        if not entries:
+        # Cold or stale table. Falling back to the raw archive is correct but
+        # expensive, so say which path was taken rather than being quietly slow.
+        print("  entries table cold or stale; rebuilding from the raw "
+              "archive (run `avo entries build` to materialise it)", flush=True)
+        paths = load_paths()
+        if not paths:
             raise SystemExit("no observations yet; capture needs to run first")
-        self._digest = digest.load_or_build(entries)
-        return entries, SeriesHistory(entries)
+        self._digest = digest.load_or_build(paths)
+        return paths, SeriesHistory.from_resolutions(read_resolutions(DATA_ROOT))
 
     def score(
         self,
         candidate: Candidate,
         loaded: Any,
-        entries: Sequence[Entry] | None = None,
+        entries: Sequence[MarketPath] | None = None,
         history: SeriesHistory | None = None,
         subset: str = "all",
-        chunks: Iterable[Sequence[Entry]] | None = None,
+        chunks: Iterable[Sequence[MarketPath]] | None = None,
     ) -> Score:
         """Brier skill vs the market's implied probability (INVARIANT #2).
 
@@ -317,10 +349,10 @@ class KalshiQuantExperiment:
         """
         if chunks is None:
             if entries is None:
-                entries = load_entries()
+                entries = load_paths()
             chunks = [entries]
         if history is None:
-            history = SeriesHistory(list(entries) if entries is not None else [])
+            history = SeriesHistory.from_resolutions(read_resolutions(DATA_ROOT))
 
         # `subset` splits by SERIES for selection honesty, not by market. The
         # failure guarded against is a winner that only works on whichever
@@ -332,7 +364,7 @@ class KalshiQuantExperiment:
         # Accumulated across chunks. These are all the scorer keeps: three
         # floats and a label per observation, plus fills grouped by series.
         # Entry objects never outlive their chunk, so peak memory is the chunk
-        # size rather than the dataset -- see entries_store.iter_entries.
+        # size rather than the dataset -- see entries_store.iter_paths.
         obs: list[Observation] = []
         series: list[str] = []
         stale_vals: list[float] = []
@@ -359,14 +391,13 @@ class KalshiQuantExperiment:
 
             batch_scored: list[Entry] = []
             batch_forecasts: list[float] = []
-            for e in keep:
+            for path in keep:
+                # ENTRY_POLICY: the candidate's first signal, walking forward.
+                # A raise or an out-of-range forecast anywhere on the walk
+                # (NaN included) makes the market an error, never a score.
                 try:
-                    p = float(loaded.forecast(e.market, history.context_for(e)))
+                    e, p = first_signal(path, loaded.forecast, history)
                 except Exception:  # noqa: BLE001 - a broken candidate must not kill the run
-                    errors += 1
-                    continue
-                # NaN fails this comparison too, so it is caught here as well.
-                if not (0.0 <= p <= 1.0):
                     errors += 1
                     continue
                 obs.append(Observation(p, e.market.implied_prob, e.outcome))
@@ -634,6 +665,20 @@ class KalshiQuantExperiment:
             "2 probability points even on the tightest books, while every bias "
             "measured so far is 1-3 points. A candidate must beat the midpoint "
             "by MORE THAN 2 POINTS on markets it can identify in advance.",
+            "",
+            "HOW YOU ARE SCORED (since 2026-09-28). Exactly as paper trading "
+            "trades: each market is shown to you at every captured quote from "
+            "72h before its close until it resolves, oldest first, and the "
+            "FIRST quote where your forecast differs from the market is your "
+            "trade. Nothing later counts, and you cannot know when a market "
+            "will settle. Until 2026-09-28 the backtest instead scored each "
+            "market's LAST quote before the outcome was known, which leaked "
+            "the answer: early-settling markets were caught just before a "
+            "sudden YES. Every result, family verdict and 'already tried' "
+            "number below from before that date carries that leak -- the "
+            "'unclimbed' favourite family's edge was the leak itself. Treat "
+            "old conclusions as hints, not facts, and never design around "
+            "WHEN a market will settle.",
             "",
             "THE MEASURABILITY CONSTRAINT. A candidate is judged on ~200 fills "
             "across many series, and the observation set grows ~5,000 markets a "

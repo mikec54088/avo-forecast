@@ -279,3 +279,141 @@ def test_old_rows_without_a_source_still_load(tmp_path):
     df = paper_log.read(tmp_path)
     assert len(df) == 1
     assert "quote_source" not in df.columns or df["quote_source"].isna().all()
+
+
+# ------------------------------------------------- replay / paper parity
+#
+# The backtest's entry rule once used hindsight (the last quote before the
+# outcome was known) and paper trading could not, so the two measured
+# different bets for eleven days before anyone noticed. They now share one
+# decision rule and one context builder, and this test holds them to it: run
+# paper trading pass by pass over an archive as if live, and it must take
+# exactly the trades the replay says it would.
+
+class _PathReader:
+    MANIFEST: ClassVar[dict] = {"candidate_id": "path"}
+    def forecast(self, m, c):
+        return min(m.implied_prob + 0.05, 0.99) if len(c.price_history) >= 2 else m.implied_prob
+
+
+class _SiblingReader:
+    MANIFEST: ClassVar[dict] = {"candidate_id": "sibling"}
+    def forecast(self, m, c):
+        return max(m.implied_prob - 0.05, 0.01) if c.siblings else m.implied_prob
+
+
+class _HistoryReader:
+    MANIFEST: ClassVar[dict] = {"candidate_id": "history"}
+    def forecast(self, m, c):
+        known = c.series_history.get(m.series_ticker, [])
+        return min(m.implied_prob + 0.05, 0.99) if known else m.implied_prob
+
+
+def test_paper_trading_takes_exactly_the_trades_the_replay_takes(data_root, tmp_path):
+    from experiments.kalshi_quant.observations import (
+        SeriesHistory,
+        acts,
+        first_signal,
+        load_paths,
+        read_resolutions,
+    )
+    mods = {"path": _PathReader(), "sibling": _SiblingReader(), "history": _HistoryReader()}
+    exp = _Exp(mods)
+    res = read_resolutions(data_root)
+    history = SeriesHistory.from_resolutions(res)
+
+    replay = set()
+    for p in load_paths(data_root):
+        for cid, mod in mods.items():
+            e, f = first_signal(p, mod.forecast, history)
+            if acts(f, e.market.implied_prob):
+                replay.add((cid, e.ticker, e.market.observed_at))
+    assert {c for c, _, _ in replay} == set(mods), "fixture must exercise every reader"
+
+    snaps = pd.concat([pd.read_parquet(f) for f in (data_root / "snapshots").glob("*/*.parquet")])
+    snaps["observed_at"] = pd.to_datetime(snaps["observed_at"], utc=True)
+    resolved = dict(zip(res["ticker"], pd.to_datetime(res["resolved_at"], utc=True), strict=True))
+    root = tmp_path / "paper"
+    for t in sorted(snaps["observed_at"].unique()):
+        t = pd.Timestamp(t)
+        live = snaps[(snaps["observed_at"] == t)
+                     & snaps["ticker"].map(lambda k, t=t: k not in resolved or resolved[k] > t)]
+        run_pass(live, snaps[snaps["observed_at"] <= t], now=t.to_pydatetime(), root=root,
+                 candidates=tuple(mods), experiment=exp, history=history)
+    df = paper_log.read(root)
+    paper = {(c, k, pd.Timestamp(o).to_pydatetime())
+             for c, k, o in zip(df["candidate_id"], df["ticker"], df["observed_at"], strict=True)
+             if k in resolved}      # a market that never resolves settles neither side
+    assert paper == replay
+
+
+# ------------------------------------------------- automatic promotion & the alarm
+
+def _verdict(cid, sel, conf, gs=True, gc=True):
+    from types import SimpleNamespace
+    def score(lb):
+        return SimpleNamespace(secondary={"pnl_per_contract": lb + 0.0196,
+                                          "pnl_se_clustered": 0.01})
+    return SimpleNamespace(candidate_id=cid, selection=score(sel), confirmation=score(conf),
+                           gate_selection=gs, gate_confirmed=gc)
+
+
+def test_only_both_halves_passers_are_promoted_strongest_first(tmp_path):
+    """The backtest screens, paper judges: a candidate passing on one half only
+    has not earned a live test, and the order is by its WEAKER lower bound."""
+    from experiments.kalshi_quant.experiment import promote_to_paper
+    vs = [_verdict("strong_sel_weak_conf", 0.09, 0.001), _verdict("steady", 0.02, 0.02),
+          _verdict("selection_only", 0.2, 0.2, gc=False)]
+    assert promote_to_paper(vs, tmp_path / "auto.json") == ["steady", "strong_sel_weak_conf"]
+    assert promote_to_paper(vs, tmp_path / "auto.json", top=1) == ["steady"]
+
+
+def test_paper_reads_the_whitelist_plus_the_promoted(tmp_path, monkeypatch):
+    import json
+
+    from experiments.kalshi_quant import experiment, paper_runner
+    f = tmp_path / "auto.json"
+    monkeypatch.setattr(experiment, "PAPER_AUTO", f)
+    assert paper_runner.paper_candidates() == paper_runner.PAPER_CANDIDATES
+    f.write_text(json.dumps({"candidates": ["steady", paper_runner.PAPER_CANDIDATES[0]]}))
+    assert paper_runner.paper_candidates() == (*paper_runner.PAPER_CANDIDATES, "steady")
+
+
+def test_the_alarm_fires_when_paper_and_replay_disagree_about_money(data_root):
+    """Paper says a candidate loses on markets where the replay says it wins:
+    exactly the eleven-day disagreement nobody saw."""
+    import dataclasses
+
+    from experiments.kalshi_quant import paper_check
+    from experiments.kalshi_quant.observations import SeriesHistory, load_paths, read_resolutions
+    paths = {p.ticker: p for p in load_paths(data_root)}
+    deep = tuple(dataclasses.replace(d, yes_ask=d.yes_bid + 0.02,
+                                     yes_bid_size=4000.0, yes_ask_size=4000.0)
+                 for d in paths["m1"].decisions)          # a tight, deep, fillable book
+    paths["m1"] = dataclasses.replace(paths["m1"], decisions=deep)
+    history = SeriesHistory.from_resolutions(read_resolutions(data_root))
+    m1 = paths["m1"].entry_at(0).market
+    rows = pd.DataFrame([{"candidate_id": "buyer", "ticker": "m1", "series_ticker": f"S{i}",
+                          "observed_at": m1.observed_at, "pnl_per_contract": -0.40}
+                         for i in range(40)])
+    monkey = type("E", (), {})()
+    monkey.seed_candidates = lambda: [Candidate("buyer", "kalshi_quant", 0, None, NOW, "x", "")]
+    monkey.load_candidate = lambda c: _Buyer()
+    (c,) = paper_check.check(rows, paths, monkey, history)
+    assert c.decision_match == 1.0 and "do not overlap" in c.alarm
+
+
+def test_the_alarm_fires_when_the_replay_cannot_fill_what_paper_traded(data_root):
+    from experiments.kalshi_quant import paper_check
+    from experiments.kalshi_quant.observations import SeriesHistory, load_paths, read_resolutions
+    paths = {p.ticker: p for p in load_paths(data_root)}      # 10-lot books: no fill
+    m1 = paths["m1"].entry_at(0).market
+    rows = pd.DataFrame([{"candidate_id": "buyer", "ticker": "m1", "series_ticker": f"S{i}",
+                          "observed_at": m1.observed_at, "pnl_per_contract": 0.1}
+                         for i in range(40)])
+    e = type("E", (), {})()
+    e.seed_candidates = lambda: [Candidate("buyer", "kalshi_quant", 0, None, NOW, "x", "")]
+    e.load_candidate = lambda c: _Buyer()
+    (c,) = paper_check.check(rows, paths, e,
+                             SeriesHistory.from_resolutions(read_resolutions(data_root)))
+    assert "could not fill" in c.alarm

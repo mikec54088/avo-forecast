@@ -9,11 +9,16 @@ from __future__ import annotations
 import json
 
 from experiments.kalshi_quant import entries_store
-from experiments.kalshi_quant.observations import load_entries
+from experiments.kalshi_quant.observations import load_paths
 
 
-def _key(e):
-    """Everything about an entry that scoring can see."""
+def _key(p):
+    """Everything about a path that scoring can see: every decision with the
+    context it would be asked in."""
+    return tuple(_entry_key(p.entry_at(i)) for i in range(len(p.decisions)))
+
+
+def _entry_key(e):
     m = e.market
     return (
         m.ticker, m.event_ticker, m.series_ticker, m.title,
@@ -29,8 +34,8 @@ def _key(e):
 
 def test_the_table_reproduces_the_raw_rebuild_exactly(data_root):
     """The whole contract. If these differ, every score silently moves."""
-    raw = load_entries(data_root)
-    assert raw, "fixture must produce entries"
+    raw = load_paths(data_root)
+    assert raw, "fixture must produce paths"
 
     stats = entries_store.build(data_root)
     assert stats.added == len(raw)
@@ -47,7 +52,7 @@ def test_load_returns_None_on_a_cold_cache_not_an_empty_list(data_root):
 
 
 def test_a_changed_policy_forces_a_rebuild_rather_than_serving_stale_rows(data_root):
-    """Every row depends on ENTRY_POLICY, MAX_ENTRY_STALENESS_MINUTES,
+    """Every row depends on ENTRY_POLICY, DECISION_HORIZON_HOURS,
     MAX_PRICE_HISTORY and SIBLING_TOLERANCE_MIN. This project has twice been
     bitten by derived data going quietly wrong against changed logic."""
     entries_store.build(data_root)
@@ -162,16 +167,16 @@ def test_streaming_scores_identically_to_holding_the_whole_list(data_root, monke
 
     for subset in ("all", "selection", "confirmation"):
         a = exp.score(c, mod, entries=listed, history=hist, subset=subset)
-        b = exp.score(c, mod, chunks=store.iter_entries(data_root), history=hist,
+        b = exp.score(c, mod, chunks=store.iter_paths(data_root), history=hist,
                       subset=subset)
         assert fields(a) == fields(b), subset
 
 
-def test_iter_entries_yields_nothing_on_a_cold_table(data_root):
+def test_iter_paths_yields_nothing_on_a_cold_table(data_root):
     """Same rule as load() returning None: a caller must not read "not built"
     as "empty", or it scores against nothing and reports success."""
     from experiments.kalshi_quant import entries_store as store
-    assert list(store.iter_entries(data_root)) == []
+    assert list(store.iter_paths(data_root)) == []
 
 
 def test_the_fill_rule_has_exactly_one_implementation():

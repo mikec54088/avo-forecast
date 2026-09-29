@@ -48,6 +48,13 @@ If a task appears to require one of these, say so and stop. Do not work around i
    the easiest thing for the agent to find and is not the research question.
 7. **One backend per run**, recorded in `RunState.backend`. Never mix models
    mid-run; it destroys comparability.
+8. **The backtest is a replay of paper trading** (added 2026-09-28). Every
+   entry, every pool member and every piece of context must be decidable at
+   the instant of the decision -- never by when or how a market settled. One
+   rule, shared by both: `observations.is_decision_quote`, `first_signal`,
+   `context_parts`, `acts`. `test_paper_trading_takes_exactly_the_trades_the_
+   replay_takes` holds them together; a change that breaks it is a leak until
+   proven otherwise. The last violation cost five weeks.
 
 ---
 
@@ -61,6 +68,31 @@ generating.
 Phase 6 (the supervisor) is still deliberately unbuilt, and so is `PriorsStore`
 — cross-run priors tuned against two runs would be heuristics fitted to
 imagination.
+
+**NIGHTLY QUANT GENERATION IS PAUSED (2026-09-28)** while every candidate is
+re-scored under the new entry policy. Resume with
+`launchctl load ~/Library/LaunchAgents/com.avoforecast.kalshi-evolve.plist`
+once `avo rank kalshi_quant` has been read under it. Research generation is
+unaffected.
+
+### How we stop going in circles (2026-09-28, human-approved)
+
+Five weeks were spent breeding candidates against a backtest whose entry rule
+used hindsight; the generator is a search engine and it found the hole. The
+warning signs were all there -- an edge 3x every measured bias, a failed mirror
+test, paper disagreeing from day one -- and each was explained away. Rules:
+
+- **Paper judges, the backtest screens.** Nothing is "proven" on replay alone.
+  `avo rank` writes the top both-halves passers to `data/kalshi_quant/
+  paper_auto.json` and paper trades them from the next pass
+  (`experiment.promote_to_paper`); `PAPER_CANDIDATES` stays as a hand whitelist.
+- **Disagreement is an alarm, not a population mismatch to engineer away.**
+  `paper_check` (launchd, 02:45) replays paper's markets daily and prints
+  `!!! ALARM` in `data/paper-check.log` when decisions or money diverge. Read
+  it at every status check.
+- **Too good means leak-check first.** Any edge outside the 1-3 point range
+  gets `scripts/leak_check.py CANDIDATE` before anything is built on it.
+- **Fix leaks structurally, not one at a time.** Invariant #8.
 
 ### The standing priority
 
@@ -219,9 +251,13 @@ Read this before proposing anything; most obvious ideas are already dead.
   296 series. The entries POOL is also outcome-selected (a book must stay
   two-sided until <=60 min before resolution, which winning favourites often
   do not), so first-signal over the whole pool reads -0.09 and is not a clean
-  estimate either. `scripts/replay_hindsight_check.py` reproduces it. Every
-  replay P&L verdict in this file is suspect until the entry policy is fixed,
-  and fixing it is a G2 question -- not decided.
+  estimate either. FIXED 2026-09-28 (G2, human-approved): ENTRY_POLICY is now
+  `first_signal_within_72h_of_close` -- walk every quote from 72h before
+  close, trade the first signal; the pool is every resolved market with such a
+  quote. `scripts/leak_check.py` runs the checks above on any candidate. EVERY
+  replay number in this file dated before 2026-09-28 -- gate passers, family
+  verdicts, parent choices, the unclimbed_favourite decision -- was measured
+  under the leak. Treat them as hints until re-measured.
 
 ### The research track, measured 2026-09-20; paused 2026-09-22
 
@@ -372,7 +408,11 @@ Done after it passed the P&L gate on both halves. Full detail in its docstring.
 
 ### Standing decisions, 2026-09-17
 
-- **DO NOT TRADE REAL MONEY YET.** `unclimbed_favourite` was the first
+- **DO NOT TRADE REAL MONEY.** Superseded 2026-09-28: the condition below
+  ("wait for ~400 confirmation fills") no longer applies -- the edge it waits
+  on was the entry-policy leak (see "THE REPLAY P&L LEAKS THE ANSWER"). There
+  is currently NO candidate with a replay edge measured honestly. Kept for
+  history: `unclimbed_favourite` was the first
   candidate to pass the P&L gate on BOTH halves and to survive the series,
   weekend, staleness and matched-control checks -- the control, same band and
   spread without its path gate, returns -0.0024 over 9,272 fills. Numbers

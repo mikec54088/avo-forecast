@@ -21,9 +21,13 @@ from experiments.kalshi_quant.experiment import (
     passes_pnl_gate,
 )
 from experiments.kalshi_quant.observations import (
-    MAX_ENTRY_STALENESS_MINUTES,
     SeriesHistory,
-    load_entries,
+    _decision_mask,
+    _read_snapshot,
+    first_signal,
+    is_decision_quote,
+    load_paths,
+    read_resolutions,
 )
 from experiments.kalshi_quant.scoring import (
     Observation,
@@ -41,62 +45,120 @@ def _candidate(created_at: datetime, cid: str = "t") -> Candidate:
     )
 
 
-def test_only_resolved_markets_become_entries(data_root):
-    entries = load_entries(data_root)
-    assert {e.ticker for e in entries} == {"m1", "m2"}, (
-        "m3 unresolved, m4 postdates resolution, m5 over the staleness cap"
-    )
+def _paths(root):
+    return {p.ticker: p for p in load_paths(root)}
 
 
-def test_stale_entries_are_dropped(data_root):
-    """ENTRY_POLICY caps staleness at 60 min. m5 resolved and was captured, but
-    its freshest price is 2h old -- old enough that a sharpen-away-from-0.5
-    transform scores on drift rather than on forecasting."""
-    entries = load_entries(data_root)
-    assert "m5" not in {e.ticker for e in entries}
-    assert all(e.staleness_minutes <= MAX_ENTRY_STALENESS_MINUTES for e in entries)
+def _hist(root):
+    return SeriesHistory.from_resolutions(read_resolutions(root))
 
 
-def test_the_freshest_snapshot_wins_over_a_stale_one(data_root):
-    """m1 has a 180-min-stale snapshot and a 10-min one. Taking the stale price
-    would both mis-state the market and push the entry over the cap."""
-    m1 = next(e for e in load_entries(data_root) if e.ticker == "m1")
-    assert m1.staleness_minutes == pytest.approx(10.0)
-    assert m1.market.implied_prob == pytest.approx(0.65)
+class _Always:
+    """Disagrees with the market at every quote."""
+    @staticmethod
+    def forecast(market, context):
+        return min(market.implied_prob + 0.05, 0.99)
 
 
-def test_entry_never_postdates_the_outcome(data_root):
-    """m4's only snapshot is after it resolved. Scoring it would be lookahead."""
-    for e in load_entries(data_root):
-        assert e.market.observed_at < e.resolved_at
+class _OnceItHasAPath:
+    """Acts only once it has seen two earlier quotes -- m1's third decision."""
+    @staticmethod
+    def forecast(market, context):
+        if len(context.price_history) >= 2:
+            return min(market.implied_prob + 0.05, 0.99)
+        return market.implied_prob
+
+
+def test_the_pool_is_every_resolved_market_with_a_decision_quote(data_root):
+    assert set(_paths(data_root)) == {"m1", "m2", "m5"}, (
+        "m3 unresolved, m4 postdates resolution, m6 beyond 72h, m7 one-sided, m8 a parlay")
+
+
+def test_the_pool_does_not_depend_on_how_late_a_market_was_quoted(data_root):
+    """m5's only quote is 2h before it resolved. The old policy dropped it for
+    staleness -- and winning favourites' books often go one-sided early, so a
+    pool built that way is chosen by outcome."""
+    m5 = _paths(data_root)["m5"]
+    assert len(m5.decisions) == 1 and m5.decisions[0].observed_at == T0 + timedelta(hours=4)
+
+
+def test_every_decision_is_knowable_at_its_own_instant(data_root):
+    """Before resolution, two-sided, not a parlay, within 72h of close."""
+    for p in load_paths(data_root):
+        times = [d.observed_at for d in p.decisions]
+        assert times == sorted(times), "decisions must be oldest first"
+        for d in p.decisions:
+            assert d.observed_at < p.resolved_at, "a decision after the outcome"
+            assert is_decision_quote(d)
+
+
+def test_the_two_decision_rules_agree(data_root):
+    """_decision_mask (the replay, vectorised) and is_decision_quote (the
+    paper runner) are the same rule; if they drift the backtest and live
+    trading ask about different quotes."""
+    from experiments.kalshi_quant.observations import _row_to_snapshot
+    snap = _read_snapshot(str(next((data_root / "snapshots").glob("*/*.parquet"))))
+    for c in ("ticker", "event_ticker", "series_ticker", "title"):
+        snap[c] = snap[c].astype(str)
+    snap = snap.assign(resolved_at=T0 + timedelta(days=30))   # all still open
+    vec = list(_decision_mask(snap))
+    one = [is_decision_quote(_row_to_snapshot(r)) for r in snap.itertuples(index=False)]
+    assert vec == one
+
+
+def test_the_entry_is_the_first_signal_not_the_last_quote(data_root):
+    """THE rule. A candidate that disagrees everywhere trades m1's FIRST
+    quote. Picking the last quote before resolution is the hindsight leak
+    this policy replaced."""
+    e, p = first_signal(_paths(data_root)["m1"], _Always.forecast, _hist(data_root))
+    assert e.market.observed_at == T0 and p != e.market.implied_prob
+
+
+def test_a_later_signal_waits_for_its_own_quote(data_root):
+    e, _ = first_signal(_paths(data_root)["m1"], _OnceItHasAPath.forecast, _hist(data_root))
+    assert e.market.observed_at == T0 + timedelta(hours=2, minutes=50)
+    assert [q.yes_bid for q in e.price_history] == [0.30, 0.50]
+
+
+def test_a_candidate_that_never_acts_is_scored_at_the_first_quote(data_root):
+    """Fixed in advance, never chosen by what happened next."""
+    class Never:
+        @staticmethod
+        def forecast(market, context):
+            return market.implied_prob
+    e, p = first_signal(_paths(data_root)["m1"], Never.forecast, _hist(data_root))
+    assert e.market.observed_at == T0 and p == e.market.implied_prob
 
 
 def test_series_history_excludes_own_and_future_outcomes(data_root):
-    entries = load_entries(data_root)
-    h = SeriesHistory(entries)
-    for e in entries:
-        hist = h.context_for(e).series_history.get(e.market.series_ticker, [])
-        assert all(r.ticker != e.ticker for r in hist), "context contains its own outcome"
-        assert all(r.resolved_at < e.market.observed_at for r in hist), "future outcome leaked"
+    h = _hist(data_root)
+    for path in load_paths(data_root):
+        for i in range(len(path.decisions)):
+            e = path.entry_at(i)
+            hist = h.context_for(e).series_history.get(e.market.series_ticker, [])
+            assert all(r.ticker != e.ticker for r in hist), "context contains its own outcome"
+            assert all(r.resolved_at < e.market.observed_at for r in hist), "future leaked"
 
 
-def test_series_history_as_of_is_strict(data_root):
-    h = SeriesHistory(load_entries(data_root))
-    at = T0 + timedelta(hours=3)
+def test_series_history_comes_from_every_resolution_not_just_the_pool(data_root):
+    """m7 never enters the pool (one-sided book), but that it resolved YES at
+    13:30 is a fact any trader knew by 14:00."""
+    h = _hist(data_root)
+    at = T0 + timedelta(hours=1, minutes=30)
     assert h.as_of("KXTEST", at) == [], "a resolution AT the instant is not yet known"
-    assert len(h.as_of("KXTEST", at + timedelta(seconds=1))) == 1
+    assert [r.ticker for r in h.as_of("KXTEST", at + timedelta(seconds=1))] == ["m7"]
 
 
 def test_holdout_excludes_truth_that_predates_the_candidate(data_root):
-    exp, entries = KalshiQuantExperiment(), load_entries(data_root)
-    h = SeriesHistory(entries)
+    exp, entries = KalshiQuantExperiment(), load_paths(data_root)
+    h = _hist(data_root)
     c = _candidate(T0)
     loaded = exp.load_candidate(c)
-    assert exp.score(c, loaded, entries=entries, history=h).n_observations == 2
+    assert exp.score(c, loaded, entries=entries, history=h).n_observations == 3
 
-    # after m1 resolved, only m2 remains
+    # after m1 resolved, m2 and m5 remain
     later = _candidate(T0 + timedelta(hours=3, minutes=1))
-    assert exp.score(later, loaded, entries=entries, history=h).n_observations == 1
+    assert exp.score(later, loaded, entries=entries, history=h).n_observations == 2
 
     # after everything resolved, nothing is scoreable
     after = _candidate(T0 + timedelta(days=1))
@@ -106,16 +168,16 @@ def test_holdout_excludes_truth_that_predates_the_candidate(data_root):
 
 
 def test_assert_clean_raises_on_a_dirty_set(data_root):
-    entries = load_entries(data_root)
+    entries = load_paths(data_root)
     with pytest.raises(HoldoutViolation):
         assert_clean(_candidate(T0 + timedelta(days=1)), entries, lambda e: e.resolved_at)
 
 
 def test_market_baseline_scores_exactly_zero(data_root):
     """INVARIANT #2's zero point. If this drifts, every skill number moves."""
-    exp, entries = KalshiQuantExperiment(), load_entries(data_root)
+    exp, entries = KalshiQuantExperiment(), load_paths(data_root)
     c = _candidate(T0)
-    s = exp.score(c, exp.load_candidate(c), entries=entries, history=SeriesHistory(entries))
+    s = exp.score(c, exp.load_candidate(c), entries=entries, history=_hist(data_root))
     assert s.primary == pytest.approx(0.0, abs=1e-12)
     assert s.secondary["candidate_brier"] == pytest.approx(s.secondary["market_brier"])
 
@@ -123,8 +185,8 @@ def test_market_baseline_scores_exactly_zero(data_root):
 def test_a_broken_candidate_does_not_kill_the_run(data_root):
     """An agent-written candidate will raise or return nonsense. That must cost
     its own score, not the whole generation."""
-    exp, entries = KalshiQuantExperiment(), load_entries(data_root)
-    h = SeriesHistory(entries)
+    exp, entries = KalshiQuantExperiment(), load_paths(data_root)
+    h = _hist(data_root)
 
     class Boom:
         @staticmethod
@@ -147,9 +209,9 @@ def test_score_reports_staleness_and_pnl(data_root):
     baseline_sharpened scored +0.0286 skill while returning -0.0020/contract
     with a series-clustered CI spanning zero -- Brier skill and money pointed
     in opposite directions, and only the secondary metrics showed it."""
-    exp, entries = KalshiQuantExperiment(), load_entries(data_root)
+    exp, entries = KalshiQuantExperiment(), load_paths(data_root)
     c = _candidate(T0)
-    s = exp.score(c, exp.load_candidate(c), entries=entries, history=SeriesHistory(entries))
+    s = exp.score(c, exp.load_candidate(c), entries=entries, history=_hist(data_root))
     for key in ("staleness_median_min", "staleness_p90_min",
                 "pnl_per_contract", "pnl_n_fills", "pnl_fill_rate"):
         assert key in s.secondary, f"{key} missing from Score.secondary"
@@ -159,7 +221,7 @@ def test_score_reports_staleness_and_pnl(data_root):
 def test_paper_trade_is_flat_when_the_candidate_agrees_with_the_market(data_root):
     """baseline_market forecasts the midpoint exactly, so it never has a reason
     to trade. Zero fills is the correct answer, not a degenerate one."""
-    entries = load_entries(data_root)
+    entries = [p.entry_at(0) for p in load_paths(data_root)]
     out = paper_trade(entries, [e.market.implied_prob for e in entries])
     assert out["pnl_n_fills"] == 0.0
     assert out["pnl_fill_rate"] == 0.0
@@ -169,7 +231,7 @@ def test_paper_trade_pays_the_spread(data_root):
     """A candidate that is right about direction can still lose money. This is
     the whole reason P&L is reported alongside skill: INVARIANT #4 makes fills
     pessimistic, and the spread plus fee is ~2 probability points."""
-    entries = [e for e in load_entries(data_root) if e.outcome == 1]
+    entries = [p.entry_at(0) for p in load_paths(data_root) if p.outcome == 1]
     assert entries, "fixture needs a yes-resolving market"
     # Forecast 1.0 on a market that resolved yes: maximally correct.
     out = paper_trade(entries, [1.0] * len(entries))
@@ -348,9 +410,9 @@ def test_pnl_gate_refuses_to_judge_too_few_fills():
 def test_pnl_gate_and_skill_can_disagree(data_root):
     """The reason the gate exists. A candidate may post positive Brier skill
     and still fail on money; nothing in scoring.py would reveal that."""
-    exp, entries = KalshiQuantExperiment(), load_entries(data_root)
+    exp, entries = KalshiQuantExperiment(), load_paths(data_root)
     c = _candidate(T0)
-    s = exp.score(c, exp.load_candidate(c), entries=entries, history=SeriesHistory(entries))
+    s = exp.score(c, exp.load_candidate(c), entries=entries, history=_hist(data_root))
     ok, why = passes_pnl_gate(s)
     assert isinstance(ok, bool) and why
 
@@ -383,55 +445,54 @@ def test_clustered_ci_needs_more_than_one_cluster():
 
 
 def test_score_reports_both_intervals(data_root):
-    exp, entries = KalshiQuantExperiment(), load_entries(data_root)
+    exp, entries = KalshiQuantExperiment(), load_paths(data_root)
     c = _candidate(T0)
-    s = exp.score(c, exp.load_candidate(c), entries=entries, history=SeriesHistory(entries))
+    s = exp.score(c, exp.load_candidate(c), entries=entries, history=_hist(data_root))
     assert "skill_ci_iid_lo" in s.secondary and "skill_ci_iid_hi" in s.secondary
     assert "series-clustered" in s.notes
 
 
 # ------------------------------------------------- price history & siblings
 
-def test_price_history_is_strictly_before_the_entry(data_root):
-    """An observation at the entry instant IS the entry, not its history."""
-    m1 = next(e for e in load_entries(data_root) if e.ticker == "m1")
+def _m1_last(root):
+    p = _paths(root)["m1"]
+    return p.entry_at(len(p.decisions) - 1)
+
+
+def test_price_history_is_strictly_before_the_decision(data_root):
+    """An observation at the decision instant IS the decision, not its history."""
+    m1 = _m1_last(data_root)
     assert len(m1.price_history) == 2, "earlier quotes of the same market missing"
     assert all(p.observed_at < m1.market.observed_at for p in m1.price_history)
     assert [p.yes_bid for p in m1.price_history] == [0.30, 0.50], "not oldest-first"
 
 
 def test_price_history_lets_a_candidate_see_direction(data_root):
-    """The point of the field. m1 drifted 0.35 -> 0.55 -> 0.65; before this
-    existed a candidate saw only 0.65 and could not tell rising from falling."""
-    m1 = next(e for e in load_entries(data_root) if e.ticker == "m1")
+    m1 = _m1_last(data_root)
     path = [p.implied_prob for p in m1.price_history] + [m1.market.implied_prob]
     assert path == sorted(path), "history does not reconstruct the path"
 
 
-def test_siblings_never_include_a_quote_from_after_the_entry(data_root):
-    """m1f is in the same event but quoted after m1 resolved. In a mutually
-    exclusive event a post-resolution sibling quote IS the outcome -- when one
-    leg settles yes the others collapse to zero. The first version of this
-    window looked forward as well as back and let exactly one such quote
-    through out of 54,611."""
-    for e in load_entries(data_root):
-        assert all(s.observed_at <= e.market.observed_at for s in e.siblings)
-        assert all(s.observed_at < e.resolved_at for s in e.siblings)
-        assert all(s.ticker != e.ticker for s in e.siblings), "self listed as sibling"
+def test_siblings_never_include_a_quote_from_after_the_decision(data_root):
+    """m1f is in m1's event but quoted after m1 resolved. In a mutually
+    exclusive event a post-resolution sibling quote IS the outcome."""
+    for p in load_paths(data_root):
+        for i in range(len(p.decisions)):
+            e = p.entry_at(i)
+            assert all(s.observed_at <= e.market.observed_at for s in e.siblings)
+            assert all(s.observed_at < e.resolved_at for s in e.siblings)
+            assert all(s.ticker != e.ticker for s in e.siblings), "self listed as sibling"
 
 
 def test_siblings_are_found_within_the_page_tolerance(data_root):
-    """observed_at is stamped per PAGE of a sweep, so legs of one event can be
-    minutes apart despite coming from the same pass."""
-    m1 = next(e for e in load_entries(data_root) if e.ticker == "m1")
-    assert {s.ticker for s in m1.siblings} == {"m1s"}, "sibling not matched"
+    assert {s.ticker for s in _m1_last(data_root).siblings} == {"m1s"}
+    first = _paths(data_root)["m1"].entry_at(0)
+    assert "m1s" not in {s.ticker for s in first.siblings}, (
+        "m1s was quoted after m1's first decision")
 
 
 def test_context_carries_the_new_fields(data_root):
-    entries = load_entries(data_root)
-    h = SeriesHistory(entries)
-    m1 = next(e for e in entries if e.ticker == "m1")
-    ctx = h.context_for(m1)
+    ctx = _hist(data_root).context_for(_m1_last(data_root))
     assert len(ctx.price_history) == 2
     assert len(ctx.siblings) == 1
     assert ctx.sibling_sum == pytest.approx(0.275)

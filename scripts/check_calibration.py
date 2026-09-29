@@ -40,7 +40,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from experiments.kalshi_quant.observations import MAX_ENTRY_STALENESS_MINUTES
+# The retired 2026-08-31 entry policy's cap. This script reproduces that
+# analysis as it was run; it is not the current ENTRY_POLICY.
+MAX_ENTRY_STALENESS_MINUTES = 60.0
 from experiments.kalshi_quant.scoring import Observation, bootstrap_ci, skill_score
 
 ROOT = Path(__file__).resolve().parents[1] / "data" / "kalshi_quant"

@@ -1,6 +1,9 @@
-"""Materialised entries: the curated half of raw -> curated.
+"""Materialised decision paths: the curated half of raw -> curated.
 
-`load_entries()` rebuilds its answer from the raw snapshot archive on every
+Since 2026-09-28 (ENTRY_POLICY first_signal_within_72h_of_close) a row in
+`entries/` is one DECISION QUOTE of a resolved market, `quotes/` its earlier
+prices and `events/` its event's prices; together they rebuild each
+MarketPath. `observations.load_paths()` rebuilds its answer from the raw snapshot archive on every
 call. That archive is 60x larger than the answer and grows forever, while the
 answer does not change: once a market has resolved, the snapshot it entered on,
 its outcome and its price path are fixed for good. Measured 2026-09-19:
@@ -33,32 +36,37 @@ import pandas as pd
 
 from experiments.kalshi_quant.observations import (
     DATA_ROOT,
+    DECISION_HORIZON_HOURS,
     ENTRY_POLICY,
-    MAX_ENTRY_STALENESS_MINUTES,
     MAX_PRICE_HISTORY,
     SIBLING_TOLERANCE_MIN,
-    Entry,
+    MarketPath,
+    SeriesHistory,
+    _concat,
     _files,
-    _row_to_snapshot,
-    load_entries,
+    _read_snapshot,
+    path_frames,
+    paths_from_frames,
+    read_resolutions,
 )
-from experiments.kalshi_quant.types import PricePoint
 
 STORE = DATA_ROOT / "entries"
 META = STORE / "meta.json"
 
-# How far back to look for snapshots of a newly resolved market. Its entry must
-# be within MAX_ENTRY_STALENESS_MINUTES of resolution, and MAX_PRICE_HISTORY
-# points at the 15-minute near cadence span 6 hours -- but the full pass is
-# hourly and a market may be quoted for days, so a generous window costs little
-# and a short one would silently truncate history.
-LOOKBACK_DAYS = 4.0
+# How far back to look for snapshots of a newly resolved market: its decision
+# quotes lie up to DECISION_HORIZON_HOURS (3 days) before its close, a close can
+# precede settlement by a day or two, and price history reaches up to
+# MAX_PRICE_HISTORY quotes further back (a day at the hourly cadence).
+LOOKBACK_DAYS = 7.0
+# A full rebuild processes resolutions this many days at a time, so it never
+# holds more than ~LOOKBACK_DAYS + BATCH_DAYS of snapshots at once.
+BATCH_DAYS = 3
 
 
 def policy() -> dict[str, object]:
     return {
         "entry_policy": ENTRY_POLICY,
-        "max_entry_staleness_minutes": MAX_ENTRY_STALENESS_MINUTES,
+        "decision_horizon_hours": DECISION_HORIZON_HOURS,
         "max_price_history": MAX_PRICE_HISTORY,
         "sibling_tolerance_min": SIBLING_TOLERANCE_MIN,
     }
@@ -73,7 +81,11 @@ def _write_meta(store: Path) -> None:
 def _entry_count(root: Path) -> int:
     import glob
     files = glob.glob(str(root / "entries" / "entries" / "date=*" / "*.parquet"))
-    return sum(len(pd.read_parquet(f, columns=["ticker"])) for f in files)
+    # Rows are decision quotes; the count that means something is markets.
+    if not files:
+        return 0
+    return int(pd.concat([pd.read_parquet(f, columns=["ticker"]) for f in files])
+               ["ticker"].nunique())
 
 
 @dataclass(frozen=True)
@@ -181,67 +193,58 @@ def _write(root: Path, kind: str, df: pd.DataFrame, tag: str) -> None:
     df.to_parquet(out / f"{datetime.now(timezone.utc):%H%M%S%f}.parquet", index=False)
 
 
-_MARKET_COLS = ("ticker", "event_ticker", "series_ticker", "title", "observed_at",
-                "close_time", "yes_bid", "yes_ask", "last_price", "volume",
-                "open_interest", "yes_bid_size", "yes_ask_size", "liquidity",
-                "status", "price_level_structure", "is_mve")
+def _write_batch(root: Path, dec: pd.DataFrame, quotes: pd.DataFrame,
+                 ev: pd.DataFrame) -> int:
+    """Partition by the market's resolution date. Event rows are written with
+    every partition that has a market in that event, so a partition is
+    self-contained when read back alone."""
+    if dec.empty:
+        return 0
+    day = pd.to_datetime(dec["resolved_at"], utc=True).dt.strftime("%Y-%m-%d")
+    for tag, group in dec.groupby(day):
+        tickers, events = set(group["ticker"]), set(group["event_ticker"])
+        _write(root, "entries", group, tag)
+        if not quotes.empty:
+            _write(root, "quotes", quotes[quotes["ticker"].isin(tickers)], tag)
+        if not ev.empty:
+            _write(root, "events", ev[ev["event_ticker"].isin(events)], tag)
+    return int(dec["ticker"].nunique())
 
 
-def _market_row(m, **extra) -> dict[str, object]:
-    d = {c: getattr(m, c) for c in _MARKET_COLS}
-    d.update(extra)
-    return d
+def _scan(root: Path, res: pd.DataFrame, snap_files: list[str]) -> int:
+    """Build and write the paths for `res`, reading only `snap_files`."""
+    if res.empty:
+        return 0
+    resolved = set(res["ticker"])
+    snap = _concat([_read_snapshot(f, keep_tickers=resolved) for f in snap_files])
+    if snap.empty:
+        return 0
+    events = set(snap["event_ticker"].astype(str))
+    ev_snap = _concat([_read_snapshot(f, keep_events=events) for f in snap_files])
+    for df in (snap, ev_snap):     # categoricals from different files do not merge
+        for c in ("ticker", "event_ticker", "series_ticker", "title"):
+            if c in df.columns:
+                df[c] = df[c].astype(str)
+    return _write_batch(root, *path_frames(snap, res, ev_snap))
 
 
-def _to_frames(entries: list[Entry]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    ent, hist, sib = [], [], []
-    for e in entries:
-        ent.append(_market_row(e.market, resolved_at=e.resolved_at, outcome=e.outcome))
-        for h in e.price_history:
-            hist.append({"ticker": e.ticker, "observed_at": h.observed_at,
-                         "yes_bid": h.yes_bid, "yes_ask": h.yes_ask,
-                         "volume": h.volume, "open_interest": h.open_interest})
-        for s in e.siblings:
-            sib.append(_market_row(s, entry_ticker=e.ticker))
-    return pd.DataFrame(ent), pd.DataFrame(hist), pd.DataFrame(sib)
-
-
-def _from_frames(ent: pd.DataFrame, hist: pd.DataFrame, sib: pd.DataFrame) -> list[Entry]:
-    by_hist: dict[str, list] = {}
-    if not hist.empty:
-        for r in hist.sort_values("observed_at").itertuples(index=False):
-            by_hist.setdefault(r.ticker, []).append(
-                PricePoint(r.observed_at.to_pydatetime(), float(r.yes_bid),
-                           float(r.yes_ask), float(r.volume), float(r.open_interest)))
-    by_sib: dict[str, list] = {}
-    if not sib.empty:
-        for r in sib.itertuples(index=False):
-            by_sib.setdefault(r.entry_ticker, []).append(_row_to_snapshot(r))
-    out = []
-    for r in ent.itertuples(index=False):
-        out.append(Entry(
-            market=_row_to_snapshot(r),
-            resolved_at=r.resolved_at.to_pydatetime(),
-            outcome=int(r.outcome),
-            price_history=tuple(by_hist.get(r.ticker, ())),
-            siblings=tuple(by_sib.get(r.ticker, ())),
-        ))
-    return out
+def _window(snap_files: list[str], when: pd.Series, lookback_days: float) -> list[str]:
+    """Snapshot files from `lookback_days` before the earliest resolution to one
+    day after the latest -- windowed on RESOLUTIONS, not on the clock, because
+    the settle sweep records outcomes days late."""
+    lo = (when.min() - timedelta(days=lookback_days)).strftime("date=%Y-%m-%d")
+    hi = (when.max() + timedelta(days=1)).strftime("date=%Y-%m-%d")
+    return [f for f in snap_files if lo <= Path(f).parent.name <= hi]
 
 
 def build(data_root: Path | None = None, lookback_days: float = LOOKBACK_DAYS,
           force: bool = False) -> StoreStats:
-    """Append entries for markets that have resolved since the last build.
+    """Append paths for markets that have resolved since the last build.
 
     Rebuilds from scratch when the policy fingerprint has moved, because rows
     built under a different ENTRY_POLICY are not the same objects and silently
-    mixing them is the failure this store exists to avoid.
-
-    The incremental case scans only snapshot files around the resolutions being
-    processed -- `lookback_days` before the earliest, one day after the latest.
-    An entry must be within MAX_ENTRY_STALENESS_MINUTES of its resolution, so
-    that window cannot cut off a usable entry. The full rebuild reads
-    everything.
+    mixing them is the failure this store exists to avoid. A rebuild runs in
+    BATCH_DAYS slices of resolution dates so memory stays bounded.
     """
     import shutil
 
@@ -252,153 +255,78 @@ def build(data_root: Path | None = None, lookback_days: float = LOOKBACK_DAYS,
         shutil.rmtree(store, ignore_errors=True)
         rebuilt = True
 
-    res_files = _files("resolutions", root)
-    if not res_files:
+    res = read_resolutions(root)
+    if res.empty:
         return StoreStats(0, 0, rebuilt, "no resolutions yet")
-    res = pd.concat([pd.read_parquet(f) for f in res_files], ignore_index=True)
-    res = res[res["outcome"].notna()].drop_duplicates("ticker")
-
     processed = set() if rebuilt else _processed_tickers(root)
-    new = set(res["ticker"]) - processed
-    if not new:
+    new = res[~res["ticker"].isin(processed)]
+    if new.empty:
         return StoreStats(0, _entry_count(root), rebuilt, "up to date")
 
     snap_files = _files("snapshots", root)
-    if not rebuilt and processed:
-        # Window the scan around the RESOLUTIONS being processed, not around
-        # `now`. Resolutions arrive late -- the settle sweep is still recording
-        # outcomes one to two days old -- so a window anchored to the clock
-        # would silently miss the snapshots of anything that resolved before
-        # it. An entry must be within MAX_ENTRY_STALENESS_MINUTES of its
-        # resolution, so this window cannot cut off a usable entry.
-        when = pd.to_datetime(res[res["ticker"].isin(new)]["resolved_at"], utc=True)
-        lo = (when.min() - timedelta(days=lookback_days)).strftime("date=%Y-%m-%d")
-        hi = (when.max() + timedelta(days=1)).strftime("date=%Y-%m-%d")
-        snap_files = [f for f in snap_files if lo <= Path(f).parent.name <= hi]
+    when = pd.to_datetime(new["resolved_at"], utc=True)
+    day = when.dt.floor("D")
+    added = 0
+    days = sorted(day.unique())
+    for i in range(0, len(days), BATCH_DAYS):
+        chunk = set(days[i:i + BATCH_DAYS])
+        mask = day.isin(chunk)
+        added += _scan(root, new[mask], _window(snap_files, when[mask], lookback_days))
 
-    entries = load_entries(root, only_tickers=new, snapshot_files=snap_files)
-
-    # Record the attempt whatever came of it, so a resolution with no usable
-    # entry is not reconsidered forever.
-    store.mkdir(parents=True, exist_ok=True)
+    # Record the attempt whatever came of it, so a resolution with no decision
+    # quote is not reconsidered forever.
     (store / "processed").mkdir(parents=True, exist_ok=True)
-    pd.DataFrame({"ticker": sorted(new)}).to_parquet(
+    pd.DataFrame({"ticker": sorted(new["ticker"])}).to_parquet(
         store / "processed" / f"{datetime.now(timezone.utc):%Y%m%dT%H%M%S%f}.parquet",
         index=False)
     _write_meta(store)
-
-    if not entries:
-        return StoreStats(0, _entry_count(root), rebuilt,
-                          f"{len(new)} resolutions had no usable entry")
-
-    ent, hist, sib = _to_frames(entries)
-    def _slice(df: pd.DataFrame, col: str, tickers: set[str]) -> pd.DataFrame:
-        # A batch can legitimately contain no history and no siblings -- a
-        # market captured once, with no quotable sibling, is the common case
-        # for a small series. An empty frame has no columns to filter on.
-        if df.empty or col not in df.columns:
-            return pd.DataFrame()
-        return df[df[col].isin(tickers)]
-
-    resolved_day = pd.to_datetime(ent["resolved_at"], utc=True).dt.strftime("%Y-%m-%d")
-    for tag, group in ent.groupby(resolved_day):
-        tickers = set(group["ticker"])
-        _write(root, "entries", group, tag)
-        _write(root, "history", _slice(hist, "ticker", tickers), tag)
-        _write(root, "siblings", _slice(sib, "entry_ticker", tickers), tag)
-
-    _write_meta(store)
-    return StoreStats(len(entries), _entry_count(root), rebuilt)
+    note = "" if added else f"{len(new)} resolutions had no decision quote"
+    return StoreStats(added, _entry_count(root), rebuilt, note)
 
 
-def load(data_root: Path | None = None) -> list[Entry] | None:
-    """Entries from the table, or None if it is absent or built under a
+def load(data_root: Path | None = None) -> list[MarketPath] | None:
+    """Every path in the table, or None if it is absent or built under a
     different policy. None means "fall back to the raw archive", never "there
-    are no entries" -- those are different answers and the caller must not
-    confuse a cold cache with an empty dataset.
+    are no paths" -- a caller must not confuse a cold cache with an empty set.
     """
-    import glob
-
     root = data_root if data_root is not None else DATA_ROOT
     if not _meta_ok(root):
         return None
-
-    def _read(kind: str) -> pd.DataFrame:
-        files = sorted(glob.glob(str(root / "entries" / kind / "date=*" / "*.parquet")))
-        if not files:
-            return pd.DataFrame()
-        return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
-
-    ent = _read("entries")
-    if ent.empty:
-        return None
-    return _from_frames(ent, _read("history"), _read("siblings"))
+    out = [p for chunk in iter_paths(root) for p in chunk]
+    return out or None
 
 
-def iter_entries(data_root: Path | None = None):
-    """Yield entries one date partition at a time, never holding the whole set.
-
-    The table is partitioned by resolution date, ~5,600 entries per partition,
-    which is a natural chunk: scoring touches each entry exactly once and never
-    looks back. Holding all 157,108 costs 2.8 GB in Python objects -- 997,418
-    MarketSnapshots and 1,562,774 PricePoints -- while the statistics scoring
-    actually keeps are three floats and a series label per entry, about 25 MB.
-    The rest is scaffolding held only because score() took a list.
-
-    Yields nothing at all if the table is cold or stale, for the same reason
-    load() returns None: a caller must not mistake "not built" for "empty".
-    """
+def _partitions(root: Path, kind: str) -> dict[str, list[str]]:
     import glob
+    out: dict[str, list[str]] = {}
+    for f in sorted(glob.glob(str(root / "entries" / kind / "date=*" / "*.parquet"))):
+        out.setdefault(Path(f).parent.name, []).append(f)
+    return out
 
+
+def iter_paths(data_root: Path | None = None):
+    """Yield paths one resolution-date partition at a time, never holding the
+    whole set. Yields nothing if the table is cold or stale."""
     root = data_root if data_root is not None else DATA_ROOT
     if not _meta_ok(root):
         return
-
-    def _by_partition(kind: str) -> dict[str, list[str]]:
-        out: dict[str, list[str]] = {}
-        for f in sorted(glob.glob(str(root / "entries" / kind / "date=*" / "*.parquet"))):
-            out.setdefault(Path(f).parent.name, []).append(f)
-        return out
-
-    ent_parts = _by_partition("entries")
-    hist_parts = _by_partition("history")
-    sib_parts = _by_partition("siblings")
 
     def _read(files: list[str]) -> pd.DataFrame:
         return (pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
                 if files else pd.DataFrame())
 
-    for tag in sorted(ent_parts):
-        chunk = _from_frames(_read(ent_parts[tag]),
-                             _read(hist_parts.get(tag, [])),
-                             _read(sib_parts.get(tag, [])))
+    dec, quotes, ev = (_partitions(root, k) for k in ("entries", "quotes", "events"))
+    for tag in sorted(dec):
+        chunk = paths_from_frames(_read(dec[tag]), _read(quotes.get(tag, [])),
+                                  _read(ev.get(tag, [])))
         if chunk:
             yield chunk
 
 
-def series_history(data_root: Path | None = None):
-    """SeriesHistory built from entry rows alone.
-
-    Needs only (series, ticker, resolved_at, outcome), so it costs ~30 MB and
-    does not require materialising price histories or siblings.
-    """
-    import glob
-
-    from experiments.kalshi_quant.observations import SeriesHistory
-
+def series_history(data_root: Path | None = None) -> SeriesHistory | None:
+    """Past resolutions for candidates' context, from EVERY recorded resolution
+    -- not only markets in the pool (see SeriesHistory.from_resolutions)."""
     root = data_root if data_root is not None else DATA_ROOT
-    files = sorted(glob.glob(str(root / "entries" / "entries" / "date=*" / "*.parquet")))
-    if not files:
+    if not _meta_ok(root):
         return None
-    cols = ["ticker", "series_ticker", "resolved_at", "outcome"]
-    df = pd.concat([pd.read_parquet(f, columns=cols) for f in files], ignore_index=True)
-    sh = SeriesHistory([])
-    for r in df.itertuples(index=False):
-        sh._by_series.setdefault(r.series_ticker, []).append(
-            (r.resolved_at.to_pydatetime(),
-             __import__("experiments.kalshi_quant.types", fromlist=["Resolution"]).Resolution(
-                 r.ticker, r.resolved_at.to_pydatetime(), int(r.outcome))))
-    for v in sh._by_series.values():
-        v.sort(key=lambda pair: pair[0])
-    sh._keys = {k: [t for t, _ in v] for k, v in sh._by_series.items()}
-    return sh
+    return SeriesHistory.from_resolutions(read_resolutions(root))

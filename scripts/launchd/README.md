@@ -199,3 +199,17 @@ stays unloaded for good.
 Capture makes no model or Claude calls. The weekly evolve spends ~11M Sonnet
 tokens (two ~15-minute generation sessions); it shares the runs/ lock with the
 nightly quant evolve, so the two never overlap.
+
+## The daily paper check, and the paused quant evolve (2026-09-28)
+
+`com.avoforecast.kalshi-paper-check` runs `experiments.kalshi_quant.paper_check`
+at 02:45, after the 02:00 entries build. It replays every market paper traded
+and prints `!!! ALARM` when the backtest and paper disagree about decisions or
+money -- the check that would have caught the eleven-day hindsight leak.
+
+    grep ALARM data/paper-check.log
+
+`com.avoforecast.kalshi-evolve` is UNLOADED (plist kept) while every candidate
+is re-scored under the new entry policy. Resume with:
+
+    launchctl load ~/Library/LaunchAgents/com.avoforecast.kalshi-evolve.plist
