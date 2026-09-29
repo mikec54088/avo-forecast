@@ -345,21 +345,24 @@ def paths_from_frames(dec: pd.DataFrame, quotes: pd.DataFrame,
             by_q.setdefault(str(r.ticker), []).append(PricePoint(
                 r.observed_at.to_pydatetime(), float(r.yes_bid), float(r.yes_ask),
                 float(r.volume), float(r.open_interest)))
-    by_ev: dict[str, tuple[MarketSnapshot, ...]] = {}
+    # One pass per frame: itertuples per groupby group costs ~50x more.
+    ev_lists: dict[str, list[MarketSnapshot]] = {}
     if not ev.empty:
-        for e, g in ev.sort_values("observed_at").groupby("event_ticker", observed=True):
-            by_ev[str(e)] = tuple(_row_to_snapshot(r) for r in g.itertuples(index=False))
-    out: list[MarketPath] = []
-    for t, g in dec.sort_values("observed_at").groupby("ticker", observed=True, sort=False):
-        first = g.iloc[0]
-        out.append(MarketPath(
-            resolved_at=pd.Timestamp(first["resolved_at"]).to_pydatetime(),
-            outcome=int(first["outcome"]),
-            decisions=tuple(_row_to_snapshot(r) for r in g.itertuples(index=False)),
-            quotes=tuple(by_q.get(str(t), ())),
-            event_quotes=by_ev.get(str(first["event_ticker"]), ()),
-        ))
-    return out
+        for r in ev.sort_values("observed_at").itertuples(index=False):
+            ev_lists.setdefault(str(r.event_ticker), []).append(_row_to_snapshot(r))
+    by_ev = {k: tuple(v) for k, v in ev_lists.items()}
+    decs: dict[str, list[MarketSnapshot]] = {}
+    meta: dict[str, tuple[datetime, int]] = {}
+    for r in dec.sort_values("observed_at").itertuples(index=False):
+        t = str(r.ticker)
+        if t not in decs:
+            decs[t] = []
+            meta[t] = (pd.Timestamp(r.resolved_at).to_pydatetime(), int(r.outcome))
+        decs[t].append(_row_to_snapshot(r))
+    return [MarketPath(resolved_at=meta[t][0], outcome=meta[t][1], decisions=tuple(d),
+                       quotes=tuple(by_q.get(t, ())),
+                       event_quotes=by_ev.get(d[0].event_ticker, ()))
+            for t, d in decs.items()]
 
 
 def read_resolutions(root: Path) -> pd.DataFrame:
