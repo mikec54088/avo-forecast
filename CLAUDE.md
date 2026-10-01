@@ -10,6 +10,31 @@ Read `docs/DESIGN.md` for reasoning, `docs/ROADMAP.md` for build order,
 
 ---
 
+## Session habits (human-requested, 2026-09-29)
+
+- **At the start of every new session, ask whether to schedule the daily
+  report.** Session cron jobs die when a session ends and expire after 7 days,
+  so it has to be re-offered each time. If yes, `CronCreate` a recurring job
+  (~09:07 daily, off the :00/:30 marks) that reads, and changes nothing:
+  capture freshness (`launchctl list | grep avoforecast`, newest snapshot under
+  ~30 min old -- capture down is reported FIRST), `!!! ALARM` and the latest
+  paper-vs-replay numbers in `data/paper-check.log`, last night's evolve result
+  in `data/evolve.log` (parents, accepted/written, quota abort), any new
+  candidate with an edge outside 1-3 points (run `scripts/leak_check.py`), and
+  that research evidence is still landing. Push-notify only on an alarm, dead
+  capture, or a decision needed.
+- **Anything that has to happen later gets a schedule, not a promise.** When a
+  task waits on time or an event (tonight's generation, a fill count, a
+  settlement, a pause to lift), create a one-shot `CronCreate` for when it
+  should be ready that does the check and reports back, instead of leaving it
+  for the human to remember or for a later session to stumble on. Say what was
+  scheduled and when. Scheduled jobs are read-only unless the human has said
+  otherwise; they never cross a STOP-AND-ASK gate.
+- **Explain everything in plain language, as if to a 14-year-old**, unless
+  the human asks for the technical version.
+
+---
+
 ## STOP-AND-ASK gates
 
 You resolve most ambiguity yourself. **Not these.** Each one invalidates prior
