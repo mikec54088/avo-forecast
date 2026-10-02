@@ -309,3 +309,14 @@ def test_the_loader_survives_a_column_less_snapshot(tmp_path):
     pd.DataFrame().to_parquet(p)
     assert _read_snapshot(str(p), keep_tickers={"anything"}).empty
     assert _read_snapshot(str(p), keep_events={"anything"}).empty
+
+
+def test_parse_failure_alarm_fires_on_a_schema_change_and_not_on_noise():
+    """The 2026-10-01 outage: every market unparsed, every job exit 0."""
+    from experiments.kalshi_quant.capture import parse_failure_alarm
+
+    assert parse_failure_alarm(seen=8040, unparsed=8040) is not None
+    assert parse_failure_alarm(seen=8040, unparsed=1000) is not None
+    assert parse_failure_alarm(seen=8040, unparsed=3) is None
+    assert parse_failure_alarm(seen=5, unparsed=5) is None  # too few to judge
+    assert parse_failure_alarm(seen=0, unparsed=0) is None

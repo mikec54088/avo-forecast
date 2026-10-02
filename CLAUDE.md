@@ -132,6 +132,14 @@ that data lands, never that a job is loaded:
     launchctl list | grep avoforecast          # 2nd column is last exit status
     ls data/kalshi_quant/snapshots/date=*/     # near pass every 15 min
 
+**Exit 0 and a file on disk are NOT proof.** 2026-10-01: Kalshi dropped
+`liquidity_dollars`, the strict parse rejected every market, and ~18h of
+snapshots were written as empty 7.8 KB files (a healthy full pass is ~2.7 MB,
+near ~85 KB) with every job exiting 0. Check file SIZES, not just presence.
+`capture.parse_failure_alarm` now prints `!!! ALARM` in `data/capture.log`,
+raises a desktop notification and exits nonzero when >5% of a pass's markets
+fail to parse. Prices stay strict on purpose; only `liquidity` is defaulted.
+
 ### What has actually been learned
 
 Read this before proposing anything; most obvious ideas are already dead.

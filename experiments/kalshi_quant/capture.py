@@ -332,7 +332,46 @@ def snapshot(
             )
         for line in unparsed_samples:
             print(f"  unparsed: {line}")
+        alarm = parse_failure_alarm(seen, unparsed)
+        if alarm:
+            print(f"  !!! ALARM {alarm}")
+            _notify_desktop(alarm)
+            # Nonzero exit so `launchctl list` shows it. The file is already
+            # written, and nothing runs after this in the job.
+            raise SystemExit(1)
         return path
+
+
+PARSE_ALARM_FRACTION = 0.05
+PARSE_ALARM_MIN_SEEN = 20
+
+
+def parse_failure_alarm(seen: int, unparsed: int) -> str | None:
+    """A sweep that cannot parse its markets is capture down, even though it ran.
+
+    On 2026-10-01 Kalshi dropped `liquidity_dollars`; all 8,000-150,000 markets
+    per pass failed to parse, every job exited 0, and ~18h of snapshots were
+    written empty before anyone looked. Snapshots are not backfillable. A normal
+    pass parses ~100%, so a few percent unparsed already means a schema change.
+    """
+    if seen < PARSE_ALARM_MIN_SEEN or unparsed <= seen * PARSE_ALARM_FRACTION:
+        return None
+    return (f"{unparsed} of {seen} markets failed to parse "
+            f"({unparsed / seen:.0%}). Kalshi probably changed its schema; "
+            f"snapshots are being lost. See the unparsed samples above.")
+
+
+def _notify_desktop(message: str) -> None:
+    """Best effort: a log line nobody reads is not an alarm."""
+    import subprocess
+    try:
+        subprocess.run(
+            ["osascript", "-e",
+             f'display notification "{message[:120]}" with title "avo capture ALARM"'],
+            timeout=10, check=False, capture_output=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def _parquet_files(kind: str, since: datetime | None = None) -> list[Path]:
