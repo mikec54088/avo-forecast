@@ -236,7 +236,10 @@ def parse_market(raw: dict[str, Any], observed_at: datetime | None = None) -> Ma
         open_interest=_money(raw, "open_interest_fp"),
         yes_bid_size=_money(raw, "yes_bid_size_fp"),
         yes_ask_size=_money(raw, "yes_ask_size_fp"),
-        liquidity=_money(raw, "liquidity_dollars"),
+        # Tolerated deliberately: Kalshi stopped sending `liquidity_dollars`
+        # (2026-10-01, every market unparsed, ~9h of snapshots lost). It was
+        # 0.0 on every market ever observed, so absence loses nothing.
+        liquidity=_money(raw, "liquidity_dollars") if "liquidity_dollars" in raw else 0.0,
         status=raw["status"],
         price_level_structure=raw["price_level_structure"],
         is_mve=bool(raw.get("mve_selected_legs")),

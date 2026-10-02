@@ -103,6 +103,14 @@ def test_missing_price_field_raises_rather_than_defaulting(raw_markets):
         parse_market(broken)
 
 
+def test_missing_liquidity_field_is_tolerated(raw_markets):
+    """Kalshi stopped sending liquidity_dollars on 2026-10-01 and the strict parse
+    dropped every market, emptying ~9h of snapshots. The field was always 0.0."""
+    stripped = dict(raw_markets[0])
+    del stripped["liquidity_dollars"]
+    assert parse_market(stripped).liquidity == 0.0
+
+
 def test_observed_at_is_honoured(raw_markets):
     stamp = datetime(2026, 8, 23, 12, 0, tzinfo=timezone.utc)
     assert parse_market(raw_markets[0], observed_at=stamp).observed_at == stamp
