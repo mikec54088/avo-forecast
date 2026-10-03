@@ -351,7 +351,9 @@ dropped. Pilot results and the running local-only shadow test are in
 
 **CURRENT STATE: RUNNING ON THE LOCAL ENGINE since 2026-09-26** (paused
 2026-09-22, resumed by the human). launchd `com.avoforecast.kalshi-research-local`
-hourly at :50, 12 research calls/pass, no Claude calls. The live candidate is
+hourly at :50, 20 research calls/pass (raised from 12 on 2026-10-03; hundreds of
+markets were queueing behind the cap, and the log's "FAILED" count was those
+deferrals, not failures -- it now reports them separately), no Claude calls. The live candidate is
 `local_news_favourite` (fresh identity, created 2026-09-26);
 `roster_news_favourite` is retired -- scored on its Sonnet history, never asked
 again. Every retrieval lands in `data/kalshi_research/evidence/`. NEVER reload

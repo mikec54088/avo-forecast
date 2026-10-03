@@ -38,7 +38,7 @@
         <string>--max-markets</string>
         <string>50000</string>
         <string>--max-research-per-pass</string>
-        <string>12</string>
+        <string>20</string>
     </array>
 
     <key>EnvironmentVariables</key>

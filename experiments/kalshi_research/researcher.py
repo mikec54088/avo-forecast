@@ -55,6 +55,9 @@ class StubResearcher:
 #
 # v2 demands a verdict token the candidate can parse. A negation, an
 # unconfirmed report, a routine preview and silence all collapse to NONE.
+PASS_CAP_ERROR = "pass research budget"   # the runner tells a cap refusal from a real failure by this
+
+
 @dataclass
 class BudgetedResearcher:
     """Caps research calls for one PASS, wrapping any other researcher.
@@ -87,7 +90,7 @@ class BudgetedResearcher:
         if self.used >= self.budget:
             self.refused += 1
             return ResearchResult(query, "", 0.0, calls=0,
-                                  error=f"pass research budget {self.budget} exhausted")
+                                  error=f"{PASS_CAP_ERROR} {self.budget} exhausted")
         self.used += 1
         return self.inner.research(query)
 

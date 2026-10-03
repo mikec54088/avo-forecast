@@ -49,7 +49,7 @@ import pandas as pd
 from experiments.kalshi_quant.observations import _row_to_snapshot
 from experiments.kalshi_quant.types import MarketSnapshot
 from experiments.kalshi_research import forecast_log
-from experiments.kalshi_research.researcher import BudgetedResearcher, make
+from experiments.kalshi_research.researcher import PASS_CAP_ERROR, BudgetedResearcher, make
 from experiments.kalshi_research.types import (
     DEFAULT_BUDGET,
     ResearchContext,
@@ -150,7 +150,7 @@ def run_pass(
     chosen = select_markets(snapshot, now, max_close_hours, max_markets)
     stats = {"markets": len(chosen), "asked": 0, "forecasts": 0, "acted": 0,
              "deferred": 0, "skipped_seen": 0, "errors": 0, "research_calls": 0,
-             "research_failed": 0}
+             "research_failed": 0, "capped": 0}
     rows: list[dict[str, object]] = []
 
     for r in chosen.itertuples(index=False):
@@ -174,7 +174,12 @@ def run_pass(
                 err, p = f"raised {exc!r}"[:200], m.implied_prob
             stats["asked"] += 1
             stats["research_calls"] += ctx.calls
-            stats["research_failed"] += ctx.research_failed
+            # A market refused only because the PASS cap was spent is deferred
+            # (below) but did not fail: counting it as a failure made hundreds
+            # of healthy deferrals read as a broken channel.
+            real_errors = [e for e in ctx.errors if not e.startswith(PASS_CAP_ERROR)]
+            stats["research_failed"] += bool(real_errors)
+            stats["capped"] += bool(ctx.errors) and not real_errors
             acted = abs(p - m.implied_prob) > 1e-12 or ctx.calls > 0 or bool(err)
             # A broken research channel is not a forecast. Consuming the market
             # would log an abstention indistinguishable from the control and
@@ -251,11 +256,12 @@ def main() -> None:
               f"{st['skipped_seen']} done earlier, {st['errors']} errors, "
               f"{st['research_calls']} research calls "
               f"({st['research_failed']} FAILED) in {elapsed:.0f}s -> {path}")
-        if researcher.refused:
-            print(f"      pass research budget {args.max_research_per_pass} spent; "
-                  f"{researcher.refused} market(s) deferred to the next pass")
+        if st["capped"]:
+            print(f"      pass research limit of {args.max_research_per_pass} lookups "
+                  f"reached; {st['capped']} market(s) waiting for the next pass "
+                  "(normal, not a failure)")
         if st["research_failed"]:
-            print(f"      WARNING: {st['research_failed']} research call(s) failed. "
+            print(f"      WARNING: {st['research_failed']} research call(s) really failed. "
                   "Those markets were deferred, not scored. Check credits/network.")
 
 

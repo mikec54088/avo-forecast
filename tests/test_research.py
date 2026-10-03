@@ -502,3 +502,35 @@ def forecast(market, context):
 def test_research_prompt_says_it_cannot_be_backtested():
     text = EXP.variation_prompt(None, [])
     assert "cannot be backtested" in text and "COST CONSTRAINT" in text
+
+
+def test_pass_cap_deferrals_are_not_counted_as_failures(tmp_path):
+    """Markets refused only because the hourly lookup limit was spent are
+    deferred, but they did not fail. They were reported as FAILED with a
+    'check credits/network' warning, which read as a broken channel."""
+    from avo.core.types import Candidate
+    from experiments.kalshi_research.researcher import BudgetedResearcher
+    from experiments.kalshi_research.types import ResearchResult
+
+    class Fine:
+        name = "fine"
+        def research(self, query):
+            return ResearchResult(query, "VERDICT: NONE", 0.1)
+
+    class Researches:
+        MANIFEST: ClassVar[dict] = {"candidate_id": "r"}
+        def forecast(self, m, c):
+            c.research("anything")
+            return m.implied_prob
+
+    class FakeExp:
+        def seed_candidates(self):
+            return [Candidate("r", "kalshi_research", 0, None, NOW, "x", "")]
+        def load_candidate(self, c):
+            return Researches()
+
+    capped = BudgetedResearcher(Fine(), 1)
+    _, st = run_pass(capped, _snapshot(3, close_in_h=48.0), now=NOW,
+                     root=tmp_path, experiment=FakeExp())
+    assert st["research_failed"] == 0
+    assert st["capped"] == 2 and st["deferred"] == 2   # 1 spent, 2 waiting
