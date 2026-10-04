@@ -228,3 +228,9 @@ conditions for going back to daily.
 the stations Kalshi's temperature markets settle on -- the one outside number
 that cannot be downloaded after the fact. Retrieval only. Check it like the
 snapshots: rows per run (~5,800 from 27 stations), not exit status.
+
+`trade-tape` (hourly :20, `data/trade-tape.log`) downloads Kalshi's public
+trade tape into `data/kalshi_quant/trades/` (~65 MB/day) for the resting-order
+fill model. Each run heals the last 6 complete hours; a backfill is
+`scripts/trade_tape.py --since DATE`. An hour's file exists only if the hour
+was walked to the end.
