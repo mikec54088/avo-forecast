@@ -244,9 +244,12 @@ def _evolve(args) -> None:
     repo_root = Path(__file__).resolve().parents[2]
     exp = registry.load(args.experiment)
     # Controls are instruments, not candidates to improve. Breeding from one
-    # spends a generation optimising toward a known dead end.
+    # spends a generation optimising toward a known dead end. Retired
+    # candidates (human decision, e.g. 2026-10-04) are never parents either;
+    # they stay scored for their history. Excluding them here also keeps them
+    # out of pool_signature, so retiring one never triggers a generation.
     controls = [c.candidate_id for c in exp.seed_candidates()
-                if c.meta.get("role") == "control"]
+                if c.meta.get("role") == "control" or c.meta.get("retired")]
     # G2, decided 2026-09-08: a candidate proven to lose money is not a parent.
     from experiments.kalshi_quant.experiment import (
         PNL_GATE_MIN_FILLS,

@@ -65,6 +65,11 @@ MANIFEST = {
     "generation": 2,
     "parent_id": "bidirectional_news_shift",
     "created_at": "2026-10-04T15:06:56.530401+00:00",
+    # Retired 2026-10-04 (human decision): one of four sports news-shift
+    # strategies that are really one bet against sportsbook-anchored game
+    # prices. Across ~94 overlapping scored decisions they were right 15-30%
+    # of the time and lost 7-19c a trade before fees. History kept for scoring.
+    "retired": True,
     "rationale": (
         "Same favourite gate, question and two-direction mapping as the parent, "
         "but research only in the 4h before kickoff, when lineups and scratches "

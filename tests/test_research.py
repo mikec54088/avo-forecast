@@ -455,7 +455,8 @@ def test_subsets_split_by_series_with_the_shared_salt(tmp_path):
     _resolutions(tmp_path, {"KXTEST-T0": (NOW + timedelta(hours=1), 1),
                             "KXTEST-T1": (NOW + timedelta(hours=1), 0)})
     obs = load_forecast_observations(tmp_path, tmp_path)
-    c = EXP.seed_candidates()[0]
+    # First LIVE candidate: a retired one is never asked, so logs no forecasts.
+    c = next(c for c in EXP.seed_candidates() if not c.meta.get("retired"))
     side = "confirmation" if is_confirmation_group("KXTEST") else "selection"
     other = "selection" if side == "confirmation" else "confirmation"
     assert EXP.score(c, EXP.load_candidate(c), entries=obs, subset=side).n_observations == 2

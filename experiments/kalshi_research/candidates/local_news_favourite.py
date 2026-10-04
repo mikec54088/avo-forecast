@@ -47,6 +47,10 @@ MANIFEST = {
     "generation": 1,
     "parent_id": "roster_news_favourite",
     "created_at": "2026-09-26T00:00:00+00:00",
+    # Retired 2026-10-04 (human decision): the same sports news bet as the four
+    # shift candidates retired that day -- 3 right of 20 scored decisions, and
+    # sports prices are anchored to sportsbooks. History kept for scoring.
+    "retired": True,
     "rationale": (
         "roster_news_favourite's hypothesis and decision rule on the local "
         "research engine (qwen3.5:9b, deterministic retrieval), under a fresh "

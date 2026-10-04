@@ -213,3 +213,18 @@ money -- the check that would have caught the eleven-day hindsight leak.
 is re-scored under the new entry policy. Resume with:
 
     launchctl load ~/Library/LaunchAgents/com.avoforecast.kalshi-evolve.plist
+
+## Weekly quant evolve and outside-number capture (2026-10-04)
+
+    com.avoforecast.kalshi-evolve        Wed 03:35   data/evolve.log           (was daily)
+    com.avoforecast.weather-capture      hourly :41  data/weather-capture.log
+
+Quant generation moved to WEEKLY (human decision): under the honest replay all
+52 candidates lose about the cost of trading and every one has a verdict, so
+nightly runs were rewriting the same idea. The plist comment lists the
+conditions for going back to daily.
+
+`weather-capture` records the National Weather Service forecast, as issued, for
+the stations Kalshi's temperature markets settle on -- the one outside number
+that cannot be downloaded after the fact. Retrieval only. Check it like the
+snapshots: rows per run (~5,800 from 27 stations), not exit status.

@@ -68,8 +68,19 @@
          matters: ~25 min of local CPU for the scoring pass (score_all must run
          before the pool can be compared -- you cannot know a verdict moved
          without recomputing it) and ZERO API quota. -->
+    <!-- WEEKLY since 2026-10-04 (human decision), Wednesday 03:35. Under the
+         honest first-signal replay all 52 candidates lose about the cost of
+         trading, every one has a verdict, and five nights running bred
+         near-copies of fielded_favourite (skill +0.0001), half rejected for
+         never leaving the market price. Context holds only Kalshi's own
+         prices; more nights do not change that. GO BACK TO DAILY (delete the
+         Weekday key) when any of: a candidate passes the P&L gate on either
+         half, the context gains new information (an outside-number field or
+         experiment), or an unproven candidate needs maturing again. Wednesday
+         so it never shares a day with the Sunday research generation. -->
     <key>StartCalendarInterval</key>
     <dict>
+        <key>Weekday</key><integer>3</integer>
         <key>Hour</key><integer>3</integer>
         <key>Minute</key><integer>35</integer>
     </dict>

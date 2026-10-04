@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- NWS forecasts as issued (scripts/weather_capture.py). Decided by the human
+     2026-10-04: the forecast as it stood at a past hour cannot be downloaded
+     later, so record it now in case Kalshi's temperature markets turn out to
+     lag it. Retrieval only, no model call. 27 stations, ~20 KB/hour.
+     Hourly at :41 -- clear of the full snapshot (:07-:33), research capture
+     (:35), near passes (:00/:15/:30/:45) and research (:50). Exits nonzero and
+     prints !!! ALARM when under 90% of stations answer. -->
+<dict>
+    <key>Label</key>
+    <string>com.avoforecast.weather-capture</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/hermesagent/miniconda3/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>scripts/weather_capture.py</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict><key>PATH</key><string>/Users/hermesagent/.local/bin:/Users/hermesagent/miniconda3/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+    <key>WorkingDirectory</key>
+    <string>/Users/hermesagent/development/avo-forecast</string>
+    <key>StartCalendarInterval</key>
+    <dict><key>Minute</key><integer>41</integer></dict>
+    <key>StandardOutPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/weather-capture.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/weather-capture.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

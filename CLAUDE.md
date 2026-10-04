@@ -67,7 +67,12 @@ If a task appears to require one of these, say so and stop. Do not work around i
    in core. If core needs something domain-specific, widen the protocol in
    `core/interfaces.py` — do not special-case.
 4. **Pessimistic fills.** Cross the spread, cap at a fraction of visible depth,
-   apply fees. Never fill at midpoint.
+   apply fees. Never fill at midpoint. *Amended in principle 2026-10-04
+   (G3, human-approved): resting (maker) orders that wait to be filled are
+   allowed, but only under a pessimistic passive-fill model measured on
+   Kalshi's trade tape -- a resting order fills only when trades go THROUGH
+   its price, behind the queue that was ahead of it, with the maker fee.
+   Not built; nothing may assume maker fills until that model exists.*
 5. **Run artifacts are never committed.** `data/`, `runs/` — both gitignored.
 6. **One venue.** Kalshi only. Do not add Polymarket. Cross-venue arbitrage is
    the easiest thing for the agent to find and is not the research question.
@@ -94,10 +99,41 @@ Phase 6 (the supervisor) is still deliberately unbuilt, and so is `PriorsStore`
 — cross-run priors tuned against two runs would be heuristics fitted to
 imagination.
 
-**NIGHTLY QUANT GENERATION RESUMED (2026-09-29)** after being paused 2026-09-28
-while every candidate was re-scored under the first-signal entry policy
-(`data/rank-2026-09-29-first-signal.log`). `com.avoforecast.kalshi-evolve` is
-loaded again. Research generation was never affected.
+**QUANT GENERATION IS WEEKLY (Wed 03:35) since 2026-10-04** (human decision).
+Under the honest replay all 52 candidates lose about the cost of trading,
+every one has a verdict, and gens 15-19 bred near-copies of
+`fielded_favourite` (skill +0.0001), half rejected for never leaving the
+market price. The context holds only Kalshi's own prices; more nights do not
+change that. **The human asked that it go back to NIGHTLY whenever there is a
+reason** -- a candidate passes the P&L gate on either half, the context gains
+new information, or unproven candidates need maturing again. Check at every
+status check; the triggers are also in the plist comment.
+
+### Outside numbers (2026-10-04, human-approved)
+
+The market cannot be beaten with only the market's own prices, so the next
+question is whether Kalshi's book LAGS the outside number a market settles on.
+`scripts/crypto_fair_value.py` measures it for crypto (Coinbase spot +
+realised vol, first-signal entries, spot always older than the quote, a leak
+canary for comparison). `scripts/weather_capture.py` (launchd
+`weather-capture`, hourly :41) records NWS forecasts as issued -- not
+backfillable, so captured before anything is decided. **If a measurement
+finds an edge it becomes a NEW experiment** (G5 pre-approved for that case),
+not a ForecastContext field, so the 52 quant candidates stay comparable.
+
+**CRYPTO: MEASURED 2026-10-04, NO LAG -- DEAD at our resolution.** 708,019
+quotes on 84,470 markets (BTC/ETH/SOL/XRP/DOGE; above, range, 15-min up/down),
+Aug 24 - Oct 4. Ticker parse reproduces Kalshi's outcomes 99-100%. Trading the
+gap between a spot+realised-vol fair value and the book, first signal within
+72h: -2.2c to -3.7c per contract at every threshold, on BOTH halves, for every
+coin, kind and time-to-close band. Bigger claimed edges lose MORE (claimed
++16c, realised -3c): when the model disagrees most, the book is right. The
+naive model's Brier skill vs the mid is NEGATIVE (-0.024); a 20-30% blend adds
+only +0.006, the size of skill that has never paid. Spot 1, 5 or 15 minutes
+old makes no difference, so there is no minute-scale lag to collect; the LEAK
+CANARY (spot 5 min after the quote) earns +6.9c, so the instrument can see an
+edge when one exists. Full output: data/crypto-fair-value-2026-10-04.log.
+Weather remains open (capture started 2026-10-04; needs weeks of forecasts).
 
 ### How we stop going in circles (2026-09-28, human-approved)
 
@@ -353,8 +389,8 @@ dropped. Pilot results and the running local-only shadow test are in
 2026-09-22, resumed by the human). launchd `com.avoforecast.kalshi-research-local`
 hourly at :50, 20 research calls/pass (raised from 12 on 2026-10-03; hundreds of
 markets were queueing behind the cap, and the log's "FAILED" count was those
-deferrals, not failures -- it now reports them separately), no Claude calls. The live candidate is
-`local_news_favourite` (fresh identity, created 2026-09-26);
+deferrals, not failures -- it now reports them separately), no Claude calls. The live candidate WAS
+`local_news_favourite` (retired 2026-10-04) (fresh identity, created 2026-09-26);
 `roster_news_favourite` is retired -- scored on its Sonnet history, never asked
 again. Every retrieval lands in `data/kalshi_research/evidence/`. NEVER reload
 the old `com.avoforecast.kalshi-research-run` plist (Sonnet). Details and the
@@ -366,6 +402,16 @@ calls were in-game before this) and a **politics research candidate**,
 `politics_already_happened` -- yes/no political events in their final 48h,
 "does a dated report say it already happened / was ruled out?". Slow by
 design (~23 markets/week). Details in the plan doc's 2026-09-28 section.
+
+**Four sports news-shift candidates RETIRED 2026-10-04** (human decision):
+`bidirectional_news_shift`, `underdog_mirror_shift`, `tossup_news_shift`,
+`lineup_window_shift`. They are one bet against sportsbook-anchored game
+prices; across ~94 overlapping scored decisions the research candidates that
+disagreed with the market were right 15-30% of the time and lost 7-19c a trade
+before fees. `local_news_favourite` was retired the same day (3 right of 20).
+Parent selection now skips every `retired` candidate (`cli.py`, via the same
+exclude list as controls). With it retired, the only live research candidate
+is `politics_already_happened`.
 
 Since 2026-09-26 also: **evidence capture** (`kalshi-research-capture`, hourly,
 every research-series game at T-12h/T-3h/T-1h, retrieval only, into

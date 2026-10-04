@@ -104,6 +104,11 @@ MANIFEST = {
     "generation": 1,
     "parent_id": "roster_news_favourite",
     "created_at": "2026-09-27T15:10:12.229585+00:00",
+    # Retired 2026-10-04 (human decision): one of four sports news-shift
+    # strategies that are really one bet against sportsbook-anchored game
+    # prices. Across ~94 overlapping scored decisions they were right 15-30%
+    # of the time and lost 7-19c a trade before fees. History kept for scoring.
+    "retired": True,
     "rationale": (
         "Trade the OTHER leg of the same event the parent already researches: "
         "when a sibling favourite market is eligible under the parent's own "
