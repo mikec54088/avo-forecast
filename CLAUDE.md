@@ -135,6 +135,23 @@ CANARY (spot 5 min after the quote) earns +6.9c, so the instrument can see an
 edge when one exists. Full output: data/crypto-fair-value-2026-10-04.log.
 Weather remains open (capture started 2026-10-04; needs weeks of forecasts).
 
+**RESTING (MAKER) ORDERS: MEASURED 2026-10-05, they do NOT remove the hurdle.**
+`scripts/maker_fill_model.py` + the trade tape (`data/kalshi_quant/trades/`,
+hourly job `trade-tape`). Signal-free: rest 10 contracts at the touch on every
+hourly near-pass quote (spread <= 8c), 2026-09-20..10-01, pessimistic fills
+(queue ahead never shrinks by cancels, no partials, fill only on taker volume
+reaching queue+size or a trade-through), maker fee on every market, hold to
+settlement. Fills: 15-24% of orders (crypto/weather 45-70%, others 10-30%).
+P&L per filled contract: -2.3c (15 min) / -2.9c (60 min) against -2.8c for
+crossing at the same quotes: the ~2.4c of spread saved is eaten by ADVERSE
+SELECTION (-3.3c against the mid; resting orders fill most when the price is
+moving through them). Negative in every category and both halves; buy-yes
+fills are worse (-4.3c) than buy-no (-0.4c). Net gain from resting over
+crossing is only ~0.5c, not the ~2c the hurdle needs. What it leaves open:
+whether a fill CONDITIONED ON A REAL SIGNAL has the same adverse selection --
+untested. Output: data/maker-fill-model-2026-10-05.log. INVARIANT #4 still
+governs every candidate; no maker fills may be assumed.
+
 ### How we stop going in circles (2026-09-28, human-approved)
 
 Five weeks were spent breeding candidates against a backtest whose entry rule
