@@ -152,6 +152,21 @@ whether a fill CONDITIONED ON A REAL SIGNAL has the same adverse selection --
 untested. Output: data/maker-fill-model-2026-10-05.log. INVARIANT #4 still
 governs every candidate; no maker fills may be assumed.
 
+**WHERE ARE PRICES WRONG? MEASURED 2026-10-05, nowhere that survives.**
+`scripts/time_price_cells.py` mapped executable P&L (first quote in the cell,
+cross the spread, fee) over 1.47M entries on 408,729 resolved markets, Aug 24 -
+Oct 2, across time-to-close x price paid x side x category. Pooled: -2.85c per
+contract (the cost of crossing), every time-to-close band -1.5c to -3.0c, and
+only the >=90c price band comes near zero (-1.0c). Of 290 testable cells, 9
+had a 95% lower bound above zero (~14 expected by luck); 4 were positive in
+both halves, all "buy the >=90c YES side of crypto/weather within the last
+hour" (+0.6c to +2.0c net). `scripts/convergence_drill.py` tested that family
+as one rule: -0.13c [-0.40,+0.14] over 24,936 markets (96.5% win rate against
+96.4% priced); with the depth cap it is -0.5c to -0.9c; the gain sits on
+single ask prices (97c +0.85c, 98c -0.63c); weather +0.6c, crypto -0.6c. The
+four cells were the lucky tails of a ~290-cell search, not a mechanism.
+Outputs: data/time-price-cells-2026-10-05.log, data/convergence-drill-2026-10-05.log.
+
 ### How we stop going in circles (2026-09-28, human-approved)
 
 Five weeks were spent breeding candidates against a backtest whose entry rule
