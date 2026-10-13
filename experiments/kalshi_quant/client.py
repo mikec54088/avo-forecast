@@ -27,7 +27,11 @@ import httpx
 
 from experiments.kalshi_quant.types import MarketSnapshot
 
-BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
+# Moved 2026-10-12 from external-api.kalshi.com, which stopped accepting TCP
+# connections (curl: DNS fine, connect hangs 40s) and cost ~45h of snapshots
+# from Oct 10 12:31 PDT. api.elections.kalshi.com is what scripts/trade_tape.py
+# already used, and it kept working throughout.
+BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
 
 MAX_PAGE_LIMIT = 1000
 # Reverted to 0.22 on 2026-08-25 after briefly trying 0.15. The change was
