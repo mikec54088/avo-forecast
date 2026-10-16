@@ -23,7 +23,10 @@ so anything the job shells out to must be found by absolute path or via an
 This failure is silent in the usual way: the job runs, exits 0, and simply
 never does the work.
 
-    cp com.avoforecast.kalshi-*.plist ~/Library/LaunchAgents/
+    # Copy ONLY the jobs you bootstrap. A kalshi-*.plist glob also matches the
+    # paused Sonnet runner (kalshi-research-run) and the finished shadow test.
+    cp com.avoforecast.kalshi-snapshot.plist com.avoforecast.kalshi-settle.plist \
+       com.avoforecast.kalshi-evolve.plist ~/Library/LaunchAgents/
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.avoforecast.kalshi-snapshot.plist
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.avoforecast.kalshi-settle.plist
     # kalshi-research is INTENTIONALLY PAUSED as of 2026-09-22. Do not bootstrap
@@ -106,7 +109,11 @@ job is loaded:
 ## The research agent is paused
 
 `com.avoforecast.kalshi-research-run` was booted out on 2026-09-22 while idle.
-Do not reload the old plist. The replacement must pass the shadow and canary
+Do not reload the old plist. `bootout` alone is NOT enough: macOS loads every
+plist left in `~/Library/LaunchAgents/` at login, and `RunAtLoad` fired this job
+after a reboot on 2026-10-16 (337 Sonnet rows; quarantined). Also move the file
+out of that folder (it now lives in `~/Library/LaunchAgents.disabled/`).
+The replacement must pass the shadow and canary
 gates in `docs/PLAN-2026-09-22-RESEARCH-REVAMP.md`, use a new candidate/backend
 identity, and receive explicit human approval before scheduled research resumes.
 Capture and settlement remain active during this pause.
