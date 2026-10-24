@@ -68,6 +68,7 @@ TRANSPORT_ERRORS = (
     httpx.ConnectError,
     httpx.ConnectTimeout,
     httpx.ReadTimeout,
+    httpx.ReadError,  # 'Connection reset by peer' killed a settle run and a tape run 2026-10-22
     httpx.WriteTimeout,
     httpx.PoolTimeout,
     httpx.RemoteProtocolError,

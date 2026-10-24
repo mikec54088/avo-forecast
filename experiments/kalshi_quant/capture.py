@@ -46,6 +46,13 @@ DATA_ROOT = Path(__file__).resolve().parents[2] / "data" / "kalshi_quant"
 # A full sweep takes ~7 minutes against a 15-minute cron. Overlapping runs would
 # double the request rate into a limiter we already pace against.
 LOCK_STALE_SECONDS = 40 * 60
+# A pass that outlives this is hung, not slow: a full pass takes ~23 min and a
+# near pass ~4 s. httpx timeouts are per read, so a connection that stops
+# answering without closing can hold a pass forever (2026-10-21: a full pass
+# sat 12h, no full snapshot for 13h, and snapshots cannot be backfilled).
+# faulthandler kills the process and dumps every thread's stack into the log,
+# which also says WHERE it hung. Kept under LOCK_STALE_SECONDS.
+HARD_DEADLINE_SECONDS = {"full": 35 * 60, "near": 10 * 60}
 
 # Resolutions are looked up from what we captured, NOT by walking the global
 # settled feed. Measured 2026-08-24: that feed is 99.8% MVE parlay combos and is
@@ -110,6 +117,23 @@ def _write(df: pd.DataFrame, kind: str, label: str = "") -> Path:
     return path
 
 
+def _pid_alive(text: str) -> bool:
+    """False when the lock's owner is gone (killed by the deadline, or by a
+    reboot), so its lock stops blocking the next pass at once. Unreadable
+    content counts as alive: fall back to the age rule rather than guess."""
+    try:
+        pid = int(text)
+    except ValueError:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 class _Lock:
     def __init__(self, name: str) -> None:
         self.path = DATA_ROOT / f".{name}.lock"
@@ -118,7 +142,7 @@ class _Lock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self.path.exists():
             age = datetime.now(timezone.utc).timestamp() - self.path.stat().st_mtime
-            if age < LOCK_STALE_SECONDS:
+            if _pid_alive(self.path.read_text().strip()) and age < LOCK_STALE_SECONDS:
                 raise SystemExit(f"another run holds {self.path.name} (age {age:.0f}s); skipping")
             print(f"clearing stale lock ({age:.0f}s old)")
         self.path.write_text(str(os.getpid()))
@@ -570,6 +594,9 @@ def main() -> None:
     )
     args = ap.parse_args()
     if args.mode == "snapshot":
+        import faulthandler
+        name = args.pass_name or ("near" if args.max_close_hours is not None else "full")
+        faulthandler.dump_traceback_later(HARD_DEADLINE_SECONDS[name], exit=True)
         snapshot(max_close_hours=args.max_close_hours, pass_name=args.pass_name,
                  max_pages=args.max_pages, by_series=args.by_series)
     else:

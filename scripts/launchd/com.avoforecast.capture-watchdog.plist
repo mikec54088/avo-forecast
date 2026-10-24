@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- Added 2026-10-22 after a full pass hung for 12h and nothing alarmed. Checks
+     that snapshot FILES are fresh and sane every 10 min (full <=90 min old,
+     near <=30 min). Read-only apart from one state file in data/. -->
+<dict>
+    <key>Label</key>
+    <string>com.avoforecast.capture-watchdog</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/hermesagent/miniconda3/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>scripts/capture_watchdog.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/hermesagent/development/avo-forecast</string>
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Minute</key><integer>3</integer></dict>
+        <dict><key>Minute</key><integer>13</integer></dict>
+        <dict><key>Minute</key><integer>23</integer></dict>
+        <dict><key>Minute</key><integer>33</integer></dict>
+        <dict><key>Minute</key><integer>43</integer></dict>
+        <dict><key>Minute</key><integer>53</integer></dict>
+    </array>
+    <key>StandardOutPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/capture-watchdog.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/hermesagent/development/avo-forecast/data/capture-watchdog.log</string>
+</dict>
+</plist>

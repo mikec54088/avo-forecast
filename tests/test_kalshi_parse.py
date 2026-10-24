@@ -320,3 +320,58 @@ def test_parse_failure_alarm_fires_on_a_schema_change_and_not_on_noise():
     assert parse_failure_alarm(seen=8040, unparsed=3) is None
     assert parse_failure_alarm(seen=5, unparsed=5) is None  # too few to judge
     assert parse_failure_alarm(seen=0, unparsed=0) is None
+
+
+def test_a_reset_connection_is_retried_not_fatal(monkeypatch):
+    """'Connection reset by peer' is httpx.ReadError, not ReadTimeout. It was
+    missing from the retry list and killed a settle run and a tape run."""
+    import httpx
+
+    c, calls = _client_with(monkeypatch, [httpx.ReadError("Connection reset by peer"), 200])
+    assert c._get("/markets") == {"ok": True}
+    assert c.transport_retries == 1 and len(calls) == 2
+
+
+def test_a_lock_held_by_a_dead_process_does_not_block_the_next_pass(tmp_path, monkeypatch):
+    from experiments.kalshi_quant import capture
+
+    monkeypatch.setattr(capture, "DATA_ROOT", tmp_path)
+    lock = capture._Lock("snapshot")
+    lock.path.write_text("999999999")  # no such pid
+    with lock:
+        pass
+    assert not lock.path.exists()
+
+    lock.path.write_text(str(__import__("os").getpid()))  # alive and fresh
+    with pytest.raises(SystemExit, match="another run holds"):
+        lock.__enter__()
+
+
+def test_watchdog_flags_stale_or_tiny_snapshots(tmp_path, monkeypatch):
+    import importlib.util
+    import os
+    import time
+
+    spec = importlib.util.spec_from_file_location(
+        "capture_watchdog", __import__("pathlib").Path(__file__).parent.parent / "scripts" / "capture_watchdog.py")
+    w = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(w)
+    monkeypatch.setattr(w, "SNAPSHOTS", tmp_path)
+    d = tmp_path / "date=2026-10-22"
+    d.mkdir()
+    now = time.time()
+
+    def put(name: str, size: int, age_s: float) -> None:
+        f = d / name
+        f.write_bytes(b"x" * size)
+        os.utime(f, (now - age_s, now - age_s))
+
+    put("a.parquet", 2_700_000, 600)
+    put("b-near.parquet", 80_000, 300)
+    assert w.problems(now) == []
+    put("c.parquet", 2_700_000, 3 * 3600)  # the newest full pass is now still 600s old
+    assert w.problems(now) == []
+    os.utime(d / "a.parquet", (now - 3 * 3600,) * 2)
+    assert any("full snapshot is" in p and "min old" in p for p in w.problems(now))
+    put("a.parquet", 7_800, 60)  # the 2026-10-01 empty-file failure
+    assert any("bytes" in p for p in w.problems(now))
